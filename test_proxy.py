@@ -1,12 +1,6 @@
 import requests
 import time
 
-# === 核心配置区 ===
-GCP_IP = "34.60.46.113"
-GEMINI_KEY = "AIzaSyBRLP8J9Q40fyc0kG6Q6pyue2y1LjckLRM"
-TG_BOT_TOKEN = "8504510175:AAHjyAtcyKK2eXG6CXOIt4yapi7WG3o0Bps"
-TG_CHAT_ID = "8063299958"
-
 # 🚀 扩展区：把你想监控的币种全填在这里
 WATCH_LIST = ["WIF", "SOL", "PEPE", "BOME", "BTC"]
 THRESHOLD = 0.5  # 统一的波动报警阈值（%）
