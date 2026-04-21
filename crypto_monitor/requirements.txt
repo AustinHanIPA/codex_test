@@ -1,0 +1,20 @@
+# 核心依赖
+requests>=2.31.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+
+# 数据持久化
+aiosqlite>=0.19.0
+
+# 日志增强
+colorlog>=6.8.0
+
+# 可选：Redis 支持
+# redis>=5.0.0
+
+# 可选：WebSocket 支持
+# websockets>=12.0
+
+# 可选：数据分析
+# pandas>=2.1.0
+# numpy>=1.26.0

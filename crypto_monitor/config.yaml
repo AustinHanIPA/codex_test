@@ -1,0 +1,110 @@
+# === 加密货币监控系统配置 ===
+
+# 监控配置
+monitor:
+  # 监控的币种列表
+  watch_list:
+    - WIF
+    - SOL
+    - PEPE
+    - BOME
+    - BTC
+  
+  # 拉取间隔（秒）
+  interval: 30
+  
+  # 波动阈值配置（多级阈值）
+  thresholds:
+    # 小波动提醒
+    minor: 0.5
+    # 中等波动警告
+    moderate: 1.5
+    # 大波动警报
+    major: 3.0
+  
+  # 价格稳定期（秒）- 避免同一波段连环报警
+  cooldown: 60
+
+# 市场数据源配置
+market:
+  # 交易所API端点
+  base_url: "http://${GCP_IP}/mexc/api/v3/ticker/price"
+  # 请求超时（秒）
+  timeout: 8
+  # 重试次数
+  max_retries: 3
+  # 重试间隔（秒）
+  retry_delay: 2
+
+# AI服务配置
+ai:
+  provider: gemini
+  model: gemini-1.5-flash
+  base_url: "http://${GCP_IP}/gemini/v1beta/models"
+  timeout: 15
+  
+  # AI提示词模板
+  prompt_template: |
+    你是经验丰富的 Web3 交易员。${symbol} 当前价格 ${price}，近期波动 ${change:.2f}%。
+    波动级别：${level}。
+    请用${style}的网感语境写一句点评，带 Emoji，50 字内。
+    
+    波动级别说明：
+    - minor: 小波动，轻松调侃
+    - moderate: 中等波动，严肃提醒
+    - major: 大波动，紧急警报
+    
+    风格映射：
+    - minor: 嘲讽或戏谑
+    - moderate: 专业分析
+    - major: 紧急或热血
+
+# 通知配置
+notification:
+  telegram:
+    enabled: true
+    base_url: "http://${GCP_IP}/tg"
+    timeout: 10
+  
+  # 通知限流（防止刷屏）
+  rate_limit:
+    # 每分钟最大通知数
+    max_per_minute: 5
+    # 相同币种最小间隔（秒）
+    min_interval: 60
+
+# 存储配置
+storage:
+  # 数据库类型：sqlite, redis
+  type: sqlite
+  # SQLite 数据库路径
+  sqlite:
+    path: "./data/crypto_monitor.db"
+  
+  # 历史数据保留天数
+  history_retention_days: 30
+
+# 日志配置
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  # 日志文件配置
+  file:
+    enabled: true
+    path: "./logs/crypto_monitor.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+  # 控制台输出
+  console:
+    enabled: true
+    colored: true
+
+# 健康检查配置
+health_check:
+  enabled: true
+  # 检查间隔（秒）
+  interval: 300
+  # 最大连续失败次数
+  max_failures: 3
+  # 失败后自动重启
+  auto_restart: true
