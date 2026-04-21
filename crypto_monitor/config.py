@@ -151,10 +151,21 @@ class Config:
     tg_chat_id: str = ""
 
 
-def _substitute_env_vars(value: str) -> str:
+# 需要用环境变量替换的配置键名
+ENV_VAR_KEYS = {'base_url', 'path'}
+
+# 模板占位符（运行时替换，不在此处理）
+TEMPLATE_PLACEHOLDERS = {'symbol', 'price', 'change', 'level', 'style'}
+
+
+def _substitute_env_vars(value: str, key_name: str = '') -> str:
     """
     替换字符串中的环境变量占位符
-    支持格式: ${VAR_NAME} 或 $VAR_NAME
+    支持格式: ${VAR_NAME}
+    
+    Args:
+        value: 配置值
+        key_name: 配置键名，用于判断是否需要替换
     """
     if not isinstance(value, str):
         return value
@@ -164,9 +175,17 @@ def _substitute_env_vars(value: str) -> str:
     
     def replacer(match):
         var_name = match.group(1)
-        env_value = os.getenv(var_name, "")
+        
+        # 提取实际变量名（去掉 : 后面的格式化部分）
+        actual_var = var_name.split(':')[0]
+        
+        # 如果是模板占位符，保持原样
+        if actual_var in TEMPLATE_PLACEHOLDERS:
+            return match.group(0)  # 返回原始匹配
+        
+        env_value = os.getenv(actual_var, "")
         if not env_value:
-            raise ValueError(f"环境变量 {var_name} 未设置")
+            raise ValueError(f"环境变量 {actual_var} 未设置")
         return env_value
     
     return re.sub(pattern, replacer, value)
@@ -179,10 +198,10 @@ def _process_config_values(config: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(value, dict):
             result[key] = _process_config_values(value)
         elif isinstance(value, str):
-            result[key] = _substitute_env_vars(value)
+            result[key] = _substitute_env_vars(value, key)
         elif isinstance(value, list):
             result[key] = [
-                _substitute_env_vars(item) if isinstance(item, str) else item
+                _substitute_env_vars(item, key) if isinstance(item, str) else item
                 for item in value
             ]
         else:

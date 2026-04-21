@@ -375,7 +375,8 @@ class MonitorEngine:
             'total_checked': len(results),
             'alerts_triggered': len(alerts),
             'alerts': alerts,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'results': results  # 包含详细价格结果
         }
     
     async def run_forever(self):
@@ -421,6 +422,23 @@ class MonitorEngine:
             f"[{timestamp}] {status} | "
             f"检查: {checked} | 报警: {alerts}"
         )
+        
+        # 打印各币种价格详情
+        results = summary.get('results', {})
+        for symbol, result in results.items():
+            price = result.get('price', 0)
+            change = result.get('change', 0)
+            change_str = f"{change:+.2f}%"
+            
+            # 根据波动方向选择 emoji
+            if change > 0:
+                emoji = "📈"
+            elif change < 0:
+                emoji = "📉"
+            else:
+                emoji = "➖"
+            
+            print(f"  {emoji} {symbol}: ${price:,.4f} ({change_str})")
     
     async def _health_check(self):
         """

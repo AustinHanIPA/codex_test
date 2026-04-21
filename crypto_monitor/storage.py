@@ -31,13 +31,19 @@ class Storage:
         self.db_path = db_path or get_config().storage.sqlite.path
         self.logger = get_storage_logger()
         self._db: Optional[aiosqlite.Connection] = None
-        
-        # 确保数据库目录存在
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def db(self) -> aiosqlite.Connection:
+        """获取数据库连接，确保非空"""
+        if self._db is None:
+            raise RuntimeError("数据库未连接，请先调用 connect()")
+        return self._db
     
     async def connect(self):
         """建立数据库连接"""
         if self._db is None:
+            # 确保数据库目录存在
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             self._db = await aiosqlite.connect(self.db_path)
             await self._init_tables()
             self.logger.info(f"数据库连接成功: {self.db_path}")
@@ -45,14 +51,14 @@ class Storage:
     async def close(self):
         """关闭数据库连接"""
         if self._db:
-            await self._db.close()
+            await self.db.close()
             self._db = None
             self.logger.info("数据库连接已关闭")
     
     async def _init_tables(self):
         """初始化数据表"""
         # 价格历史表
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -64,7 +70,7 @@ class Storage:
         ''')
         
         # 报警记录表
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -79,7 +85,7 @@ class Storage:
         ''')
         
         # 币种状态表（用于持久化last_prices）
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE TABLE IF NOT EXISTS symbol_state (
                 symbol TEXT PRIMARY KEY,
                 last_price REAL NOT NULL,
@@ -89,24 +95,24 @@ class Storage:
         ''')
         
         # 创建索引
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE INDEX IF NOT EXISTS idx_price_history_symbol 
             ON price_history(symbol)
         ''')
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE INDEX IF NOT EXISTS idx_price_history_timestamp 
             ON price_history(timestamp)
         ''')
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE INDEX IF NOT EXISTS idx_alerts_symbol 
             ON alerts(symbol)
         ''')
-        await self._db.execute('''
+        await self.db.execute('''
             CREATE INDEX IF NOT EXISTS idx_alerts_sent_at 
             ON alerts(sent_at)
         ''')
         
-        await self._db.commit()
+        await self.db.commit()
         self.logger.debug("数据表初始化完成")
     
     async def save_price(
@@ -123,14 +129,14 @@ class Storage:
             price: 当前价格
             change_percent: 波动百分比
         """
-        await self._db.execute(
+        await self.db.execute(
             '''
             INSERT INTO price_history (symbol, price, change_percent)
             VALUES (?, ?, ?)
             ''',
             (symbol, price, change_percent)
         )
-        await self._db.commit()
+        await self.db.commit()
     
     async def save_alert(
         self,
@@ -152,7 +158,7 @@ class Storage:
             ai_comment: AI点评
             telegram_message_id: Telegram消息ID
         """
-        await self._db.execute(
+        await self.db.execute(
             '''
             INSERT INTO alerts 
             (symbol, price, change_percent, alert_level, ai_comment, telegram_message_id)
@@ -160,7 +166,7 @@ class Storage:
             ''',
             (symbol, price, change_percent, alert_level, ai_comment, telegram_message_id)
         )
-        await self._db.commit()
+        await self.db.commit()
         self.logger.info(f"保存报警记录: {symbol} {change_percent:+.2f}% [{alert_level}]")
     
     async def update_symbol_state(
@@ -177,7 +183,7 @@ class Storage:
             last_price: 最新价格
             last_alert_time: 最后报警时间
         """
-        await self._db.execute(
+        await self.db.execute(
             '''
             INSERT INTO symbol_state (symbol, last_price, last_alert_time, updated_at)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -188,7 +194,7 @@ class Storage:
             ''',
             (symbol, last_price, last_alert_time)
         )
-        await self._db.commit()
+        await self.db.commit()
     
     async def get_symbol_state(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
@@ -200,7 +206,7 @@ class Storage:
         Returns:
             币种状态字典，包含 last_price, last_alert_time 等
         """
-        async with self._db.execute(
+        async with self.db.execute(
             'SELECT last_price, last_alert_time FROM symbol_state WHERE symbol = ?',
             (symbol,)
         ) as cursor:
@@ -220,7 +226,7 @@ class Storage:
             币种状态字典，key为symbol
         """
         states = {}
-        async with self._db.execute(
+        async with self.db.execute(
             'SELECT symbol, last_price, last_alert_time FROM symbol_state'
         ) as cursor:
             async for row in cursor:
@@ -248,7 +254,7 @@ class Storage:
             价格历史列表
         """
         since = datetime.now() - timedelta(hours=hours)
-        async with self._db.execute(
+        async with self.db.execute(
             '''
             SELECT price, change_percent, timestamp 
             FROM price_history 
@@ -306,7 +312,7 @@ class Storage:
             '''
             params = (since.isoformat(), limit)
         
-        async with self._db.execute(query, params) as cursor:
+        async with self.db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             return [
                 {
@@ -330,20 +336,20 @@ class Storage:
         cutoff = datetime.now() - timedelta(days=retention_days)
         
         # 清理价格历史
-        result = await self._db.execute(
+        result = await self.db.execute(
             'DELETE FROM price_history WHERE timestamp < ?',
             (cutoff.isoformat(),)
         )
         price_deleted = result.rowcount
         
         # 清理报警记录
-        result = await self._db.execute(
+        result = await self.db.execute(
             'DELETE FROM alerts WHERE sent_at < ?',
             (cutoff.isoformat(),)
         )
         alert_deleted = result.rowcount
         
-        await self._db.commit()
+        await self.db.commit()
         self.logger.info(
             f"清理过期数据完成: 价格记录 {price_deleted} 条, 报警记录 {alert_deleted} 条"
         )
@@ -358,30 +364,34 @@ class Storage:
         stats = {}
         
         # 价格记录总数
-        async with self._db.execute(
+        async with self.db.execute(
             'SELECT COUNT(*) FROM price_history'
         ) as cursor:
-            stats['total_prices'] = (await cursor.fetchone())[0]
+            row = await cursor.fetchone()
+            stats['total_prices'] = row[0] if row else 0
         
         # 报警记录总数
-        async with self._db.execute(
+        async with self.db.execute(
             'SELECT COUNT(*) FROM alerts'
         ) as cursor:
-            stats['total_alerts'] = (await cursor.fetchone())[0]
+            row = await cursor.fetchone()
+            stats['total_alerts'] = row[0] if row else 0
         
         # 今日报警数
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        async with self._db.execute(
+        async with self.db.execute(
             'SELECT COUNT(*) FROM alerts WHERE sent_at >= ?',
             (today.isoformat(),)
         ) as cursor:
-            stats['today_alerts'] = (await cursor.fetchone())[0]
+            row = await cursor.fetchone()
+            stats['today_alerts'] = row[0] if row else 0
         
         # 监控币种数
-        async with self._db.execute(
+        async with self.db.execute(
             'SELECT COUNT(*) FROM symbol_state'
         ) as cursor:
-            stats['monitored_symbols'] = (await cursor.fetchone())[0]
+            row = await cursor.fetchone()
+            stats['monitored_symbols'] = row[0] if row else 0
         
         return stats
 
