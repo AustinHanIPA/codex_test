@@ -1,304 +1,185 @@
 """
-AI服务模块
-支持Gemini等AI模型，提供价格波动点评功能
-"""
-import re
-from typing import Optional, Tuple
+AI 服务模块。
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+借鉴 api-doc-inspect 的思路，尽量让模型输出结构化结果，并对非标准返回做兜底解析。
+"""
+from __future__ import annotations
+
+import json
+import re
+from string import Template
+from typing import Any, Dict, Optional
+
+import aiohttp
 
 from config import get_config
 from logger import get_ai_logger
+from models import AIInsight, MarketSnapshot
 
 
 class AIService:
-    """
-    AI服务
-    提供智能价格波动点评功能
-    """
-    
+    """Gemini 兼容模型调用封装。"""
+
     def __init__(self):
-        """初始化AI服务"""
-        self.config = get_config().ai
+        root_config = get_config()
+        self.config = root_config.ai
+        self.api_key = root_config.gemini_api_key
         self.logger = get_ai_logger()
-        
-        # 创建带重试机制的session
-        self.session = self._create_session()
-    
-    def _create_session(self) -> requests.Session:
-        """创建带重试机制的requests session"""
-        session = requests.Session()
-        
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST"],
+        self.url = (
+            f"{self.config.base_url}/{self.config.model}:generateContent?key={self.api_key}"
+            if self.api_key and self.config.base_url
+            else ""
         )
-        
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        return session
-    
-    def generate_comment(
-        self,
-        symbol: str,
-        price: float,
-        change_percent: float,
-        level: str = "minor",
-        style: str = "嘲讽或戏谑"
-    ) -> str:
-        """
-        生成价格波动点评
-        
-        Args:
-            symbol: 币种符号
-            price: 当前价格
-            change_percent: 波动百分比
-            level: 波动级别 (minor/moderate/major)
-            style: 评论风格
-        
-        Returns:
-            AI生成的点评内容
-        """
-        config = get_config()
-        
-        # 构建API URL
-        url = (
-            f"{self.config.base_url}/"
-            f"{self.config.model}:generateContent"
-            f"?key={config.gemini_api_key}"
-        )
-        
-        # 构建提示词
-        prompt = self._build_prompt(symbol, price, change_percent, level, style)
-        
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.9,
-                "maxOutputTokens": 100,
-            }
-        }
-        
-        try:
-            self.logger.debug(f"请求AI点评: {symbol} {change_percent:+.2f}%")
-            
-            response = self.session.post(
-                url,
-                json=payload,
-                timeout=self.config.timeout
-            )
-            
-            if response.status_code != 200:
-                self.logger.warning(f"AI请求失败: HTTP {response.status_code}")
-                return self._get_fallback_comment(level)
-            
-            data = response.json()
-            
-            # 解析响应
-            comment = self._parse_response(data)
-            
-            if comment:
-                self.logger.debug(f"AI点评生成成功: {comment[:50]}...")
-                return comment
-            else:
-                return self._get_fallback_comment(level)
-                
-        except requests.exceptions.Timeout:
-            self.logger.error("AI请求超时")
-            return self._get_fallback_comment(level)
-            
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"AI请求异常: {e}")
-            return self._get_fallback_comment(level)
-            
-        except Exception as e:
-            self.logger.exception(f"AI处理异常: {e}")
-            return self._get_fallback_comment(level)
-    
-    def _build_prompt(
+
+    def _render_prompt(
         self,
         symbol: str,
         price: float,
         change_percent: float,
         level: str,
-        style: str
+        style: str,
+        snapshot: Optional[MarketSnapshot],
     ) -> str:
-        """
-        构建AI提示词
-        
-        Args:
-            symbol: 币种符号
-            price: 当前价格
-            change_percent: 波动百分比
-            level: 波动级别
-            style: 评论风格
-        
-        Returns:
-            构建好的提示词
-        """
-        # 使用配置中的模板
-        template = self.config.prompt_template
-        
-        if template:
-            # 替换模板变量
-            prompt = template.format(
-                symbol=symbol,
-                price=price,
-                change=change_percent,
-                level=level,
-                style=style
+        template_text = self.config.prompt_template.strip()
+        template_text = template_text.replace("${change:.2f}", "${change}")
+        if not template_text:
+            template_text = (
+                "你是经验丰富的 Web3 交易员。${symbol} 当前价格 ${price}，近期波动 ${change}%。"
+                "波动级别：${level}，风格：${style}，市值：${market_cap}。"
             )
-        else:
-            # 使用默认模板
-            direction = "暴涨" if change_percent > 0 else "暴跌"
-            intensity = "小幅" if level == "minor" else "大幅" if level == "major" else "明显"
-            
-            prompt = f"""你是经验丰富的 Web3 交易员。
-{symbol} 当前价格 ${price:,.4f}，{intensity}{direction} {abs(change_percent):.2f}%。
 
-请用{style}的网感语境写一句简短点评：
-- 带 Emoji 表情
-- 50 字以内
-- 有趣、有料、有态度
-"""
-        
-        return prompt
-    
-    def _parse_response(self, data: dict) -> Optional[str]:
-        """
-        解析AI响应
-        
-        Args:
-            data: API响应数据
-        
-        Returns:
-            解析出的文本内容
-        """
-        try:
-            candidates = data.get('candidates', [])
-            if not candidates:
-                return None
-            
-            content = candidates[0].get('content', {})
-            parts = content.get('parts', [])
-            if not parts:
-                return None
-            
-            text = parts[0].get('text', '').strip()
-            
-            # 清理可能的多余内容
-            text = self._clean_text(text)
-            
-            return text if text else None
-            
-        except (KeyError, IndexError, TypeError) as e:
-            self.logger.error(f"AI响应解析失败: {e}")
-            return None
-    
-    def _clean_text(self, text: str) -> str:
-        """
-        清理AI生成的文本
-        
-        Args:
-            text: 原始文本
-        
-        Returns:
-            清理后的文本
-        """
-        # 移除可能的前后引号
-        text = text.strip('"\'')
-        
-        # 移除多余空白
-        text = ' '.join(text.split())
-        
-        # 限制长度（保留Emoji）
-        if len(text) > 100:
-            text = text[:97] + '...'
-        
-        return text
-    
-    def _get_fallback_comment(self, level: str) -> str:
-        """
-        获取备用评论（当AI服务不可用时）
-        
-        Args:
-            level: 波动级别
-        
-        Returns:
-            备用评论
-        """
-        fallbacks = {
-            "minor": [
-                "🤔 小风小浪，稳住别慌~",
-                "😏 这点波动，洒洒水啦~",
-                "🤷 正常波动，继续观察~",
-            ],
-            "moderate": [
-                "⚠️ 波动加大，注意仓位！",
-                "📊 行情有变化，密切关注中...",
-                "👀 这波有点意思，盯紧了！",
-            ],
-            "major": [
-                "🚨 重大波动！请立即检查仓位！",
-                "💥 大动作来了！系好安全带！",
-                "🔥 行情剧烈波动，保持冷静！",
-            ]
+        payload = {
+            "symbol": symbol,
+            "price": f"{price:,.4f}",
+            "change": f"{change_percent:+.2f}",
+            "level": level,
+            "style": style,
+            "market_cap": self._format_optional_number(snapshot.market_cap if snapshot else None),
         }
-        
-        import random
-        return random.choice(fallbacks.get(level, fallbacks["minor"]))
-    
-    def close(self):
-        """关闭session"""
-        self.session.close()
-        self.logger.debug("AI服务session已关闭")
+        return Template(template_text).safe_substitute(payload)
 
+    @staticmethod
+    def _format_optional_number(value: Optional[float]) -> str:
+        if value is None:
+            return "未知"
+        return f"{value:,.2f}"
 
-class MockAIService(AIService):
-    """
-    模拟AI服务（用于测试）
-    """
-    
-    def generate_comment(
+    @staticmethod
+    def _extract_text(response_data: Dict[str, Any]) -> str:
+        candidates = response_data.get("candidates") or []
+        for candidate in candidates:
+            content = candidate.get("content") or {}
+            for part in content.get("parts") or []:
+                text = part.get("text")
+                if text:
+                    return text.strip()
+        return ""
+
+    def _parse_insight(self, text: str) -> AIInsight:
+        cleaned = text.strip()
+        if not cleaned:
+            return AIInsight(comment="🤔 市场波动中，先继续观察。", raw_text=text)
+
+        fenced_json = re.search(r"```json\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+        candidate = fenced_json.group(1) if fenced_json else cleaned
+
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return AIInsight(
+                    comment=str(data.get("comment") or data.get("text") or cleaned).strip(),
+                    sentiment=str(data.get("sentiment") or "neutral").strip(),
+                    risk_hint=str(data.get("risk_hint") or "").strip(),
+                    raw_text=cleaned,
+                )
+        except json.JSONDecodeError:
+            self.logger.debug("AI 返回不是标准 JSON，使用文本兜底解析")
+
+        first_line = cleaned.splitlines()[0].strip()
+        return AIInsight(comment=first_line[:120], raw_text=cleaned)
+
+    async def generate_insight(
         self,
         symbol: str,
         price: float,
         change_percent: float,
-        level: str = "minor",
-        style: str = "嘲讽或戏谑"
+        level: str,
+        style: str,
+        snapshot: Optional[MarketSnapshot] = None,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> AIInsight:
+        """请求结构化 AI 洞察。"""
+        if not self.url:
+            return AIInsight(comment="🤖 AI 未配置，已切换到默认点评。", sentiment="neutral")
+
+        prompt = self._render_prompt(symbol, price, change_percent, level, style, snapshot)
+        instruction = (
+            "请你只输出 JSON，结构为 "
+            '{"comment":"50字以内短评，带 Emoji","sentiment":"bullish/bearish/neutral","risk_hint":"一句风险提示"}。'
+        )
+        payload = {
+            "contents": [{"parts": [{"text": f"{prompt}\n{instruction}"}]}],
+            "generationConfig": {"temperature": 0.8, "maxOutputTokens": 160},
+        }
+
+        owns_session = session is None
+        if owns_session:
+            timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+            session = aiohttp.ClientSession(timeout=timeout)
+
+        assert session is not None
+        try:
+            async with session.post(self.url, json=payload) as response:
+                if response.status != 200:
+                    self.logger.warning(f"AI 服务响应异常: HTTP {response.status}")
+                    return AIInsight(comment="🤔 情绪有点乱，先盯紧下一根 K 线。", sentiment="neutral")
+
+                data = await response.json()
+                text = self._extract_text(data)
+                insight = self._parse_insight(text)
+                if not insight.comment:
+                    insight.comment = "🤔 情绪有点乱，先盯紧下一根 K 线。"
+                return insight
+        except Exception as exc:
+            self.logger.error(f"AI 请求异常: {exc}")
+            return AIInsight(comment="🤔 市场噪音较大，继续观察量价配合。", sentiment="neutral")
+        finally:
+            if owns_session:
+                await session.close()
+
+    async def generate_comment(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str,
+        style: str,
+        session: Optional[aiohttp.ClientSession] = None,
+        snapshot: Optional[MarketSnapshot] = None,
     ) -> str:
-        """生成模拟评论"""
-        direction = "📈" if change_percent > 0 else "📉"
-        return f"{direction} {symbol} {'上涨' if change_percent > 0 else '下跌'} {abs(change_percent):.2f}% [模拟AI点评]"
+        """兼容旧接口，仅返回短评文本。"""
+        insight = await self.generate_insight(
+            symbol=symbol,
+            price=price,
+            change_percent=change_percent,
+            level=level,
+            style=style,
+            snapshot=snapshot,
+            session=session,
+        )
+        return insight.comment
 
 
-# 全局实例
 _ai_service: Optional[AIService] = None
 
 
 def get_ai_service() -> AIService:
-    """获取全局AI服务实例"""
     global _ai_service
     if _ai_service is None:
         _ai_service = AIService()
     return _ai_service
 
 
-def close_ai_service():
-    """关闭全局AI服务实例"""
+def close_ai_service() -> None:
     global _ai_service
-    if _ai_service:
-        _ai_service.close()
-        _ai_service = None
+    _ai_service = None

@@ -134,6 +134,13 @@ class HealthCheckConfig:
 
 
 @dataclass
+class ServiceConfig:
+    """本地 HTTP 服务配置"""
+    host: str = "0.0.0.0"
+    port: int = 28593
+
+
+@dataclass
 class Config:
     """主配置类"""
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
@@ -143,6 +150,7 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    service: ServiceConfig = field(default_factory=ServiceConfig)
     
     # 敏感信息（从环境变量读取）
     gcp_ip: str = ""
@@ -185,7 +193,7 @@ def _substitute_env_vars(value: str, key_name: str = '') -> str:
         
         env_value = os.getenv(actual_var, "")
         if not env_value:
-            raise ValueError(f"环境变量 {actual_var} 未设置")
+            return ""
         return env_value
     
     return re.sub(pattern, replacer, value)
@@ -316,6 +324,11 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
         config.health_check = _dict_to_dataclass(
             config_data['health_check'], HealthCheckConfig
         )
+
+    if 'service' in config_data:
+        config.service = _dict_to_dataclass(
+            config_data['service'], ServiceConfig
+        )
     
     # 设置敏感信息
     config.gcp_ip = gcp_ip
@@ -331,7 +344,7 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
             config.ai.base_url = f"http://{gcp_ip}/gemini/v1beta/models"
         if not config.notification.telegram.base_url:
             config.notification.telegram.base_url = f"http://{gcp_ip}/tg"
-    
+
     return config
 
 

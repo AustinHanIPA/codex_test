@@ -1,0 +1,18 @@
+{
+    "charset": "UTF-8",
+    "loginType": 3,
+    "orderId": "THPL2026042100000265",
+    "sign": "6abcd7743fd01c8354c808299d42fde0",
+    "productName": "3PL默认场景(THPL2026042100000265)",
+    "riskParam": "****",
+    "sellerId": 11000064071477,
+    "expireCloseFlag": 1,
+    "signType": "MD5",
+    "buyerClientIP": 200807620,
+    "expireTime": 60,
+    "notifyUrl": "thrift://com.sankuai.groceryfinance.mc.pay:3403/3.2?swimlane20313-jjdgz",
+    "outNo": "POT2026042100027074",
+    "payFeeCent": 1100,
+    "bizAdminId": 2161905,
+    "extraInfo": "{\"canUseWxH5\":1,\"useOfflinePay\":1}"
+}

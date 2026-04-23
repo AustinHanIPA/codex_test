@@ -1,0 +1,3003 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+data/
+  crypto_monitor.db
+.env.example
+ai_service.py
+config.py
+config.yaml
+logger.py
+main.py
+market.py
+monitor.py
+notifier.py
+requirements.txt
+storage.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".env.example">
+# === 加密货币监控系统配置 ===
+# 复制此文件为 .env 并填入实际值
+
+# 服务端配置
+GCP_IP=your_gcp_ip_address
+GEMINI_API_KEY=your_gemini_api_key
+
+# Telegram 配置
+TG_BOT_TOKEN=your_telegram_bot_token
+TG_CHAT_ID=your_telegram_chat_id
+
+# 可选配置
+LOG_LEVEL=INFO
+DATABASE_PATH=./data/crypto_monitor.db
+</file>
+
+<file path="ai_service.py">
+"""
+AI服务模块
+支持Gemini等AI模型，提供价格波动点评功能
+"""
+import re
+from typing import Optional, Tuple
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from config import get_config
+from logger import get_ai_logger
+
+
+class AIService:
+    """
+    AI服务
+    提供智能价格波动点评功能
+    """
+    
+    def __init__(self):
+        """初始化AI服务"""
+        self.config = get_config().ai
+        self.logger = get_ai_logger()
+        
+        # 创建带重试机制的session
+        self.session = self._create_session()
+    
+    def _create_session(self) -> requests.Session:
+        """创建带重试机制的requests session"""
+        session = requests.Session()
+        
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        return session
+    
+    def generate_comment(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str = "minor",
+        style: str = "嘲讽或戏谑"
+    ) -> str:
+        """
+        生成价格波动点评
+        
+        Args:
+            symbol: 币种符号
+            price: 当前价格
+            change_percent: 波动百分比
+            level: 波动级别 (minor/moderate/major)
+            style: 评论风格
+        
+        Returns:
+            AI生成的点评内容
+        """
+        config = get_config()
+        
+        # 构建API URL
+        url = (
+            f"{self.config.base_url}/"
+            f"{self.config.model}:generateContent"
+            f"?key={config.gemini_api_key}"
+        )
+        
+        # 构建提示词
+        prompt = self._build_prompt(symbol, price, change_percent, level, style)
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.9,
+                "maxOutputTokens": 100,
+            }
+        }
+        
+        try:
+            self.logger.debug(f"请求AI点评: {symbol} {change_percent:+.2f}%")
+            
+            response = self.session.post(
+                url,
+                json=payload,
+                timeout=self.config.timeout
+            )
+            
+            if response.status_code != 200:
+                self.logger.warning(f"AI请求失败: HTTP {response.status_code}")
+                return self._get_fallback_comment(level)
+            
+            data = response.json()
+            
+            # 解析响应
+            comment = self._parse_response(data)
+            
+            if comment:
+                self.logger.debug(f"AI点评生成成功: {comment[:50]}...")
+                return comment
+            else:
+                return self._get_fallback_comment(level)
+                
+        except requests.exceptions.Timeout:
+            self.logger.error("AI请求超时")
+            return self._get_fallback_comment(level)
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"AI请求异常: {e}")
+            return self._get_fallback_comment(level)
+            
+        except Exception as e:
+            self.logger.exception(f"AI处理异常: {e}")
+            return self._get_fallback_comment(level)
+    
+    def _build_prompt(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str,
+        style: str
+    ) -> str:
+        """
+        构建AI提示词
+        
+        Args:
+            symbol: 币种符号
+            price: 当前价格
+            change_percent: 波动百分比
+            level: 波动级别
+            style: 评论风格
+        
+        Returns:
+            构建好的提示词
+        """
+        # 使用配置中的模板
+        template = self.config.prompt_template
+        
+        if template:
+            # 替换模板变量
+            prompt = template.format(
+                symbol=symbol,
+                price=price,
+                change=change_percent,
+                level=level,
+                style=style
+            )
+        else:
+            # 使用默认模板
+            direction = "暴涨" if change_percent > 0 else "暴跌"
+            intensity = "小幅" if level == "minor" else "大幅" if level == "major" else "明显"
+            
+            prompt = f"""你是经验丰富的 Web3 交易员。
+{symbol} 当前价格 ${price:,.4f}，{intensity}{direction} {abs(change_percent):.2f}%。
+
+请用{style}的网感语境写一句简短点评：
+- 带 Emoji 表情
+- 50 字以内
+- 有趣、有料、有态度
+"""
+        
+        return prompt
+    
+    def _parse_response(self, data: dict) -> Optional[str]:
+        """
+        解析AI响应
+        
+        Args:
+            data: API响应数据
+        
+        Returns:
+            解析出的文本内容
+        """
+        try:
+            candidates = data.get('candidates', [])
+            if not candidates:
+                return None
+            
+            content = candidates[0].get('content', {})
+            parts = content.get('parts', [])
+            if not parts:
+                return None
+            
+            text = parts[0].get('text', '').strip()
+            
+            # 清理可能的多余内容
+            text = self._clean_text(text)
+            
+            return text if text else None
+            
+        except (KeyError, IndexError, TypeError) as e:
+            self.logger.error(f"AI响应解析失败: {e}")
+            return None
+    
+    def _clean_text(self, text: str) -> str:
+        """
+        清理AI生成的文本
+        
+        Args:
+            text: 原始文本
+        
+        Returns:
+            清理后的文本
+        """
+        # 移除可能的前后引号
+        text = text.strip('"\'')
+        
+        # 移除多余空白
+        text = ' '.join(text.split())
+        
+        # 限制长度（保留Emoji）
+        if len(text) > 100:
+            text = text[:97] + '...'
+        
+        return text
+    
+    def _get_fallback_comment(self, level: str) -> str:
+        """
+        获取备用评论（当AI服务不可用时）
+        
+        Args:
+            level: 波动级别
+        
+        Returns:
+            备用评论
+        """
+        fallbacks = {
+            "minor": [
+                "🤔 小风小浪，稳住别慌~",
+                "😏 这点波动，洒洒水啦~",
+                "🤷 正常波动，继续观察~",
+            ],
+            "moderate": [
+                "⚠️ 波动加大，注意仓位！",
+                "📊 行情有变化，密切关注中...",
+                "👀 这波有点意思，盯紧了！",
+            ],
+            "major": [
+                "🚨 重大波动！请立即检查仓位！",
+                "💥 大动作来了！系好安全带！",
+                "🔥 行情剧烈波动，保持冷静！",
+            ]
+        }
+        
+        import random
+        return random.choice(fallbacks.get(level, fallbacks["minor"]))
+    
+    def close(self):
+        """关闭session"""
+        self.session.close()
+        self.logger.debug("AI服务session已关闭")
+
+
+class MockAIService(AIService):
+    """
+    模拟AI服务（用于测试）
+    """
+    
+    def generate_comment(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str = "minor",
+        style: str = "嘲讽或戏谑"
+    ) -> str:
+        """生成模拟评论"""
+        direction = "📈" if change_percent > 0 else "📉"
+        return f"{direction} {symbol} {'上涨' if change_percent > 0 else '下跌'} {abs(change_percent):.2f}% [模拟AI点评]"
+
+
+# 全局实例
+_ai_service: Optional[AIService] = None
+
+
+def get_ai_service() -> AIService:
+    """获取全局AI服务实例"""
+    global _ai_service
+    if _ai_service is None:
+        _ai_service = AIService()
+    return _ai_service
+
+
+def close_ai_service():
+    """关闭全局AI服务实例"""
+    global _ai_service
+    if _ai_service:
+        _ai_service.close()
+        _ai_service = None
+</file>
+
+<file path="config.py">
+"""
+配置管理模块
+支持环境变量、YAML配置文件，提供类型安全的配置访问
+"""
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+
+import yaml
+from dotenv import load_dotenv
+
+
+@dataclass
+class ThresholdConfig:
+    """波动阈值配置"""
+    minor: float = 0.5
+    moderate: float = 1.5
+    major: float = 3.0
+
+    def get_level(self, change: float) -> tuple[str, str]:
+        """
+        根据波动幅度返回级别和风格
+        
+        Returns:
+            (level, style): 级别和对应的风格描述
+        """
+        abs_change = abs(change)
+        if abs_change >= self.major:
+            return "major", "紧急或热血"
+        elif abs_change >= self.moderate:
+            return "moderate", "专业分析"
+        else:
+            return "minor", "嘲讽或戏谑"
+
+
+@dataclass
+class MonitorConfig:
+    """监控配置"""
+    watch_list: List[str] = field(default_factory=lambda: ["WIF", "SOL", "PEPE", "BOME", "BTC"])
+    interval: int = 30
+    thresholds: ThresholdConfig = field(default_factory=ThresholdConfig)
+    cooldown: int = 60
+
+
+@dataclass
+class MarketConfig:
+    """市场数据源配置"""
+    base_url: str = ""
+    timeout: int = 8
+    max_retries: int = 3
+    retry_delay: int = 2
+
+
+@dataclass
+class AIConfig:
+    """AI服务配置"""
+    provider: str = "gemini"
+    model: str = "gemini-1.5-flash"
+    base_url: str = ""
+    timeout: int = 15
+    prompt_template: str = ""
+
+
+@dataclass
+class RateLimitConfig:
+    """通知限流配置"""
+    max_per_minute: int = 5
+    min_interval: int = 60
+
+
+@dataclass
+class TelegramConfig:
+    """Telegram配置"""
+    enabled: bool = True
+    base_url: str = ""
+    timeout: int = 10
+
+
+@dataclass
+class NotificationConfig:
+    """通知配置"""
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+
+
+@dataclass
+class SQLiteConfig:
+    """SQLite配置"""
+    path: str = "./data/crypto_monitor.db"
+
+
+@dataclass
+class StorageConfig:
+    """存储配置"""
+    type: str = "sqlite"
+    sqlite: SQLiteConfig = field(default_factory=SQLiteConfig)
+    history_retention_days: int = 30
+
+
+@dataclass
+class FileLogConfig:
+    """文件日志配置"""
+    enabled: bool = True
+    path: str = "./logs/crypto_monitor.log"
+    max_bytes: int = 10485760  # 10MB
+    backup_count: int = 5
+
+
+@dataclass
+class ConsoleLogConfig:
+    """控制台日志配置"""
+    enabled: bool = True
+    colored: bool = True
+
+
+@dataclass
+class LoggingConfig:
+    """日志配置"""
+    level: str = "INFO"
+    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: FileLogConfig = field(default_factory=FileLogConfig)
+    console: ConsoleLogConfig = field(default_factory=ConsoleLogConfig)
+
+
+@dataclass
+class HealthCheckConfig:
+    """健康检查配置"""
+    enabled: bool = True
+    interval: int = 300
+    max_failures: int = 3
+    auto_restart: bool = True
+
+
+@dataclass
+class Config:
+    """主配置类"""
+    monitor: MonitorConfig = field(default_factory=MonitorConfig)
+    market: MarketConfig = field(default_factory=MarketConfig)
+    ai: AIConfig = field(default_factory=AIConfig)
+    notification: NotificationConfig = field(default_factory=NotificationConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+    health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    
+    # 敏感信息（从环境变量读取）
+    gcp_ip: str = ""
+    gemini_api_key: str = ""
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
+
+
+# 需要用环境变量替换的配置键名
+ENV_VAR_KEYS = {'base_url', 'path'}
+
+# 模板占位符（运行时替换，不在此处理）
+TEMPLATE_PLACEHOLDERS = {'symbol', 'price', 'change', 'level', 'style'}
+
+
+def _substitute_env_vars(value: str, key_name: str = '') -> str:
+    """
+    替换字符串中的环境变量占位符
+    支持格式: ${VAR_NAME}
+    
+    Args:
+        value: 配置值
+        key_name: 配置键名，用于判断是否需要替换
+    """
+    if not isinstance(value, str):
+        return value
+    
+    # 匹配 ${VAR_NAME} 格式
+    pattern = r'\$\{([^}]+)\}'
+    
+    def replacer(match):
+        var_name = match.group(1)
+        
+        # 提取实际变量名（去掉 : 后面的格式化部分）
+        actual_var = var_name.split(':')[0]
+        
+        # 如果是模板占位符，保持原样
+        if actual_var in TEMPLATE_PLACEHOLDERS:
+            return match.group(0)  # 返回原始匹配
+        
+        env_value = os.getenv(actual_var, "")
+        if not env_value:
+            raise ValueError(f"环境变量 {actual_var} 未设置")
+        return env_value
+    
+    return re.sub(pattern, replacer, value)
+
+
+def _process_config_values(config: Dict[str, Any]) -> Dict[str, Any]:
+    """递归处理配置值，替换环境变量"""
+    result = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            result[key] = _process_config_values(value)
+        elif isinstance(value, str):
+            result[key] = _substitute_env_vars(value, key)
+        elif isinstance(value, list):
+            result[key] = [
+                _substitute_env_vars(item, key) if isinstance(item, str) else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+    return result
+
+
+def _dict_to_dataclass(data: Dict[str, Any], dataclass_type: type) -> Any:
+    """将字典转换为dataclass实例"""
+    if not isinstance(data, dict):
+        return data
+    
+    # 获取dataclass的字段信息
+    fields = {f.name: f.type for f in dataclass_type.__dataclass_fields__.values()}
+    
+    kwargs = {}
+    for field_name, field_type in fields.items():
+        if field_name in data:
+            value = data[field_name]
+            # 检查字段类型是否是dataclass
+            if hasattr(field_type, '__dataclass_fields__'):
+                kwargs[field_name] = _dict_to_dataclass(value, field_type)
+            else:
+                kwargs[field_name] = value
+    
+    return dataclass_type(**kwargs)
+
+
+def load_config(config_path: Optional[str] = None, env_path: Optional[str] = None) -> Config:
+    """
+    加载配置
+    
+    Args:
+        config_path: YAML配置文件路径，默认为 ./config.yaml
+        env_path: .env文件路径，默认为 ./.env
+    
+    Returns:
+        Config: 配置对象
+    """
+    # 加载环境变量
+    if env_path is None:
+        env_path = str(Path(__file__).parent / ".env")
+    load_dotenv(env_path)
+    
+    # 读取敏感信息
+    gcp_ip = os.getenv("GCP_IP", "")
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+    tg_bot_token = os.getenv("TG_BOT_TOKEN", "")
+    tg_chat_id = os.getenv("TG_CHAT_ID", "")
+    
+    # 加载YAML配置
+    if config_path is None:
+        config_path = str(Path(__file__).parent / "config.yaml")
+    
+    config_data = {}
+    if Path(config_path).exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f) or {}
+    
+    # 替换环境变量
+    config_data = _process_config_values(config_data)
+    
+    # 构建配置对象
+    config = Config()
+    
+    # 映射YAML配置到dataclass
+    if 'monitor' in config_data:
+        config.monitor = _dict_to_dataclass(config_data['monitor'], MonitorConfig)
+        if 'thresholds' in config_data['monitor']:
+            config.monitor.thresholds = _dict_to_dataclass(
+                config_data['monitor']['thresholds'], ThresholdConfig
+            )
+    
+    if 'market' in config_data:
+        config.market = _dict_to_dataclass(config_data['market'], MarketConfig)
+    
+    if 'ai' in config_data:
+        config.ai = _dict_to_dataclass(config_data['ai'], AIConfig)
+    
+    if 'notification' in config_data:
+        config.notification = _dict_to_dataclass(
+            config_data['notification'], NotificationConfig
+        )
+        if 'telegram' in config_data['notification']:
+            config.notification.telegram = _dict_to_dataclass(
+                config_data['notification']['telegram'], TelegramConfig
+            )
+        if 'rate_limit' in config_data['notification']:
+            config.notification.rate_limit = _dict_to_dataclass(
+                config_data['notification']['rate_limit'], RateLimitConfig
+            )
+    
+    if 'storage' in config_data:
+        config.storage = _dict_to_dataclass(config_data['storage'], StorageConfig)
+        if 'sqlite' in config_data['storage']:
+            config.storage.sqlite = _dict_to_dataclass(
+                config_data['storage']['sqlite'], SQLiteConfig
+            )
+    
+    if 'logging' in config_data:
+        config.logging = _dict_to_dataclass(config_data['logging'], LoggingConfig)
+        if 'file' in config_data['logging']:
+            config.logging.file = _dict_to_dataclass(
+                config_data['logging']['file'], FileLogConfig
+            )
+        if 'console' in config_data['logging']:
+            config.logging.console = _dict_to_dataclass(
+                config_data['logging']['console'], ConsoleLogConfig
+            )
+    
+    if 'health_check' in config_data:
+        config.health_check = _dict_to_dataclass(
+            config_data['health_check'], HealthCheckConfig
+        )
+    
+    # 设置敏感信息
+    config.gcp_ip = gcp_ip
+    config.gemini_api_key = gemini_api_key
+    config.tg_bot_token = tg_bot_token
+    config.tg_chat_id = tg_chat_id
+    
+    # 构建完整URL
+    if gcp_ip:
+        if not config.market.base_url:
+            config.market.base_url = f"http://{gcp_ip}/mexc/api/v3/ticker/price"
+        if not config.ai.base_url:
+            config.ai.base_url = f"http://{gcp_ip}/gemini/v1beta/models"
+        if not config.notification.telegram.base_url:
+            config.notification.telegram.base_url = f"http://{gcp_ip}/tg"
+    
+    return config
+
+
+# 全局配置实例
+_config: Optional[Config] = None
+
+
+def get_config(reload: bool = False) -> Config:
+    """
+    获取全局配置实例
+    
+    Args:
+        reload: 是否重新加载配置
+    
+    Returns:
+        Config: 配置对象
+    """
+    global _config
+    if _config is None or reload:
+        _config = load_config()
+    return _config
+</file>
+
+<file path="config.yaml">
+# === 加密货币监控系统配置 ===
+
+# 监控配置
+monitor:
+  # 监控的币种列表
+  watch_list:
+    - WIF
+    - SOL
+    - PEPE
+    - BOME
+    - BTC
+  
+  # 拉取间隔（秒）
+  interval: 30
+  
+  # 波动阈值配置（多级阈值）
+  thresholds:
+    # 小波动提醒
+    minor: 0.5
+    # 中等波动警告
+    moderate: 1.5
+    # 大波动警报
+    major: 3.0
+  
+  # 价格稳定期（秒）- 避免同一波段连环报警
+  cooldown: 60
+
+# 市场数据源配置
+market:
+  # 交易所API端点
+  base_url: "http://${GCP_IP}/mexc/api/v3/ticker/price"
+  # 请求超时（秒）
+  timeout: 8
+  # 重试次数
+  max_retries: 3
+  # 重试间隔（秒）
+  retry_delay: 2
+
+# AI服务配置
+ai:
+  provider: gemini
+  model: gemini-1.5-flash
+  base_url: "http://${GCP_IP}/gemini/v1beta/models"
+  timeout: 15
+  
+  # AI提示词模板
+  prompt_template: |
+    你是经验丰富的 Web3 交易员。${symbol} 当前价格 ${price}，近期波动 ${change:.2f}%。
+    波动级别：${level}。
+    请用${style}的网感语境写一句点评，带 Emoji，50 字内。
+    
+    波动级别说明：
+    - minor: 小波动，轻松调侃
+    - moderate: 中等波动，严肃提醒
+    - major: 大波动，紧急警报
+    
+    风格映射：
+    - minor: 嘲讽或戏谑
+    - moderate: 专业分析
+    - major: 紧急或热血
+
+# 通知配置
+notification:
+  telegram:
+    enabled: true
+    base_url: "http://${GCP_IP}/tg"
+    timeout: 10
+  
+  # 通知限流（防止刷屏）
+  rate_limit:
+    # 每分钟最大通知数
+    max_per_minute: 5
+    # 相同币种最小间隔（秒）
+    min_interval: 60
+
+# 存储配置
+storage:
+  # 数据库类型：sqlite, redis
+  type: sqlite
+  # SQLite 数据库路径
+  sqlite:
+    path: "./data/crypto_monitor.db"
+  
+  # 历史数据保留天数
+  history_retention_days: 30
+
+# 日志配置
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  # 日志文件配置
+  file:
+    enabled: true
+    path: "./logs/crypto_monitor.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+  # 控制台输出
+  console:
+    enabled: true
+    colored: true
+
+# 健康检查配置
+health_check:
+  enabled: true
+  # 检查间隔（秒）
+  interval: 300
+  # 最大连续失败次数
+  max_failures: 3
+  # 失败后自动重启
+  auto_restart: true
+</file>
+
+<file path="logger.py">
+"""
+日志模块
+支持彩色控制台输出、文件滚动日志
+"""
+import logging
+import sys
+from pathlib import Path
+from typing import Optional
+
+try:
+    import colorlog
+    HAS_COLORLOG = True
+except ImportError:
+    HAS_COLORLOG = False
+
+from logging.handlers import RotatingFileHandler
+
+from config import LoggingConfig, get_config
+
+
+# 日志颜色配置
+LOG_COLORS = {
+    'DEBUG': 'cyan',
+    'INFO': 'green',
+    'WARNING': 'yellow',
+    'ERROR': 'red',
+    'CRITICAL': 'red,bg_white',
+}
+
+
+def setup_logger(name: str, config: Optional[LoggingConfig] = None) -> logging.Logger:
+    """
+    设置日志记录器
+    
+    Args:
+        name: 日志记录器名称
+        config: 日志配置，默认从全局配置获取
+    
+    Returns:
+        logging.Logger: 配置好的日志记录器
+    """
+    if config is None:
+        config = get_config().logging
+    
+    logger = logging.getLogger(name)
+    logger.setLevel(getattr(logging, config.level.upper()))
+    
+    # 清除已有的处理器
+    logger.handlers.clear()
+    
+    # 控制台处理器
+    if config.console.enabled:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(getattr(logging, config.level.upper()))
+        
+        if config.console.colored and HAS_COLORLOG:
+            # 彩色日志
+            formatter = colorlog.ColoredFormatter(
+                f"%(log_color)s{config.format}",
+                log_colors=LOG_COLORS,
+            )
+        else:
+            # 普通日志
+            formatter = logging.Formatter(config.format)
+        
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+    
+    # 文件处理器
+    if config.file.enabled:
+        # 确保日志目录存在
+        log_path = Path(config.file.path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        file_handler = RotatingFileHandler(
+            config.file.path,
+            maxBytes=config.file.max_bytes,
+            backupCount=config.file.backup_count,
+            encoding='utf-8',
+        )
+        file_handler.setLevel(getattr(logging, config.level.upper()))
+        file_handler.setFormatter(logging.Formatter(config.format))
+        logger.addHandler(file_handler)
+    
+    return logger
+
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    获取日志记录器
+    
+    Args:
+        name: 日志记录器名称
+    
+    Returns:
+        logging.Logger: 日志记录器
+    """
+    logger = logging.getLogger(name)
+    
+    # 如果日志记录器没有处理器，则设置
+    if not logger.handlers:
+        return setup_logger(name)
+    
+    return logger
+
+
+class LoggerAdapter:
+    """
+    日志适配器，提供便捷的日志方法
+    """
+    
+    def __init__(self, name: str):
+        self.logger = get_logger(name)
+        self.name = name
+    
+    def debug(self, msg: str, *args, **kwargs):
+        """调试日志"""
+        self.logger.debug(msg, *args, **kwargs)
+    
+    def info(self, msg: str, *args, **kwargs):
+        """信息日志"""
+        self.logger.info(msg, *args, **kwargs)
+    
+    def warning(self, msg: str, *args, **kwargs):
+        """警告日志"""
+        self.logger.warning(msg, *args, **kwargs)
+    
+    def error(self, msg: str, *args, **kwargs):
+        """错误日志"""
+        self.logger.error(msg, *args, **kwargs)
+    
+    def critical(self, msg: str, *args, **kwargs):
+        """严重错误日志"""
+        self.logger.critical(msg, *args, **kwargs)
+    
+    def exception(self, msg: str, *args, **kwargs):
+        """异常日志（自动包含堆栈信息）"""
+        self.logger.exception(msg, *args, **kwargs)
+
+
+# 预定义的日志记录器
+def get_market_logger() -> LoggerAdapter:
+    """获取市场数据日志记录器"""
+    return LoggerAdapter("crypto_monitor.market")
+
+
+def get_ai_logger() -> LoggerAdapter:
+    """获取AI服务日志记录器"""
+    return LoggerAdapter("crypto_monitor.ai")
+
+
+def get_notifier_logger() -> LoggerAdapter:
+    """获取通知服务日志记录器"""
+    return LoggerAdapter("crypto_monitor.notifier")
+
+
+def get_monitor_logger() -> LoggerAdapter:
+    """获取监控引擎日志记录器"""
+    return LoggerAdapter("crypto_monitor.monitor")
+
+
+def get_storage_logger() -> LoggerAdapter:
+    """获取存储服务日志记录器"""
+    return LoggerAdapter("crypto_monitor.storage")
+</file>
+
+<file path="main.py">
+#!/usr/bin/env python3
+"""
+加密货币监控系统 - 主入口
+
+功能特性：
+- 多币种价格监控
+- 多级波动阈值报警
+- AI智能点评
+- Telegram实时推送
+- 数据持久化存储
+- 健康检查与自恢复
+
+使用方法：
+    python main.py              # 启动监控
+    python main.py --test       # 测试模式
+    python main.py --add BTC    # 添加监控币种
+    python main.py --remove BTC # 移除监控币种
+    python main.py --status     # 查看状态
+"""
+import argparse
+import asyncio
+import json
+import signal
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+# 确保项目根目录在路径中
+sys.path.insert(0, str(Path(__file__).parent))
+
+from config import get_config, load_config
+from logger import setup_logger, get_monitor_logger
+from monitor import MonitorEngine
+from market import get_fetcher
+from ai_service import get_ai_service
+from notifier import get_notifier
+from storage import get_storage, close_storage
+
+
+def print_banner():
+    """打印启动横幅"""
+    banner = """
+    ╔═══════════════════════════════════════════════════════╗
+    ║        🔮 加密货币智能监控系统 v2.0 🔮                 ║
+    ╠═══════════════════════════════════════════════════════╣
+    ║  • 多币种实时监控    • 多级波动阈值报警              ║
+    ║  • AI智能点评        • Telegram实时推送              ║
+    ║  • 数据持久化存储    • 健康检查与自恢复              ║
+    ╚═══════════════════════════════════════════════════════╝
+    """
+    print(banner)
+
+
+def check_config():
+    """检查配置是否完整"""
+    config = get_config()
+    
+    issues = []
+    
+    if not config.gcp_ip:
+        issues.append("❌ GCP_IP 未设置")
+    else:
+        print(f"✅ GCP_IP: {config.gcp_ip}")
+    
+    if not config.gemini_api_key:
+        issues.append("❌ GEMINI_API_KEY 未设置")
+    else:
+        print(f"✅ GEMINI_API_KEY: {'*' * 8}{config.gemini_api_key[-4:]}")
+    
+    if not config.tg_bot_token:
+        issues.append("❌ TG_BOT_TOKEN 未设置")
+    else:
+        print(f"✅ TG_BOT_TOKEN: {'*' * 8}{config.tg_bot_token[-4:]}")
+    
+    if not config.tg_chat_id:
+        issues.append("❌ TG_CHAT_ID 未设置")
+    else:
+        print(f"✅ TG_CHAT_ID: {config.tg_chat_id}")
+    
+    print(f"\n📊 监控币种: {', '.join(config.monitor.watch_list)}")
+    print(f"⏱️  检查间隔: {config.monitor.interval}秒")
+    print(f"🎯 波动阈值: 小{config.monitor.thresholds.minor}% / "
+          f"中{config.monitor.thresholds.moderate}% / "
+          f"大{config.monitor.thresholds.major}%")
+    
+    if issues:
+        print("\n⚠️  配置问题:")
+        for issue in issues:
+            print(f"  {issue}")
+        print("\n请复制 .env.example 为 .env 并填写必要配置")
+        return False
+    
+    return True
+
+
+async def test_connection():
+    """测试各服务连接"""
+    print("\n🔍 测试服务连接...\n")
+    
+    # 测试市场数据
+    print("1. 测试市场数据服务...")
+    fetcher = get_fetcher()
+    prices = fetcher.get_all_prices()
+    if prices:
+        print(f"   ✅ 成功获取 {len(prices)} 个交易对价格")
+        if 'BTCUSDT' in prices:
+            print(f"   💰 BTC 当前价格: ${prices['BTCUSDT']:,.2f}")
+    else:
+        print("   ❌ 市场数据服务连接失败")
+        return False
+    
+    # 测试AI服务
+    print("\n2. 测试AI服务...")
+    ai = get_ai_service()
+    comment = ai.generate_comment("BTC", 60000.0, 2.5, "minor", "嘲讽或戏谑")
+    if comment:
+        print(f"   ✅ AI服务正常")
+        print(f"   🤖 测试点评: {comment}")
+    else:
+        print("   ⚠️  AI服务可能存在问题（将使用备用评论）")
+    
+    # 测试Telegram
+    print("\n3. 测试Telegram通知...")
+    notifier = get_notifier()
+    test_sent = notifier.telegram.send_message(
+        "🧪 测试消息 - 加密货币监控系统已启动",
+        disable_notification=True
+    )
+    if test_sent:
+        print("   ✅ Telegram通知正常")
+    else:
+        print("   ⚠️  Telegram通知可能存在问题")
+    
+    # 测试数据库
+    print("\n4. 测试数据库...")
+    storage = await get_storage()
+    stats = await storage.get_statistics()
+    print(f"   ✅ 数据库连接正常")
+    print(f"   📊 价格记录: {stats.get('total_prices', 0)}")
+    print(f"   📊 报警记录: {stats.get('total_alerts', 0)}")
+    
+    print("\n✅ 所有服务测试完成")
+    return True
+
+
+async def add_symbol(symbol: str):
+    """添加监控币种"""
+    engine = MonitorEngine()
+    await engine.initialize()
+    engine.add_symbol(symbol.upper())
+    print(f"✅ 已添加 {symbol.upper()} 到监控列表")
+    await engine.cleanup()
+
+
+async def remove_symbol(symbol: str):
+    """移除监控币种"""
+    engine = MonitorEngine()
+    await engine.initialize()
+    engine.remove_symbol(symbol.upper())
+    print(f"✅ 已从监控列表移除 {symbol.upper()}")
+    await engine.cleanup()
+
+
+async def show_status():
+    """显示系统状态"""
+    engine = MonitorEngine()
+    await engine.initialize()
+    
+    status = engine.get_status()
+    
+    print("\n📊 系统状态:")
+    print(f"  运行状态: {'✅ 运行中' if status['running'] else '⏹️ 已停止'}")
+    print(f"  暂停状态: {'⏸️ 暂停' if status['paused'] else '▶️ 运行'}")
+    print(f"  运行时长: {status['uptime'] or 'N/A'}")
+    print(f"  监控币种: {', '.join(status['watch_list'])}")
+    print(f"  失败次数: {status['failure_count']}")
+    print(f"  最后成功: {status['last_success'] or 'N/A'}")
+    
+    # 获取统计信息
+    storage = await get_storage()
+    stats = await storage.get_statistics()
+    
+    print("\n📈 数据统计:")
+    print(f"  总价格记录: {stats.get('total_prices', 0)}")
+    print(f"  总报警记录: {stats.get('total_alerts', 0)}")
+    print(f"  今日报警: {stats.get('today_alerts', 0)}")
+    print(f"  监控币种数: {stats.get('monitored_symbols', 0)}")
+    
+    await engine.cleanup()
+
+
+async def run_monitor():
+    """运行监控引擎"""
+    print_banner()
+    
+    if not check_config():
+        sys.exit(1)
+    
+    if not await test_connection():
+        print("\n⚠️  部分服务连接失败，请检查配置")
+        # 可以选择继续运行或退出
+        # sys.exit(1)
+    
+    print("\n" + "=" * 60)
+    print("🚀 启动监控引擎...")
+    print("=" * 60 + "\n")
+    
+    engine = MonitorEngine()
+    await engine.initialize()
+    
+    # 注册信号处理
+    loop = asyncio.get_event_loop()
+    
+    def handle_signal():
+        print("\n\n⏹️  收到停止信号，正在优雅关闭...")
+        engine.stop()
+    
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, handle_signal)
+    
+    try:
+        await engine.run_forever()
+    except KeyboardInterrupt:
+        print("\n\n⏹️  用户中断")
+    finally:
+        await engine.cleanup()
+        print("\n👋 监控引擎已关闭，再见！")
+
+
+async def run_once():
+    """执行一次检查"""
+    engine = MonitorEngine()
+    await engine.initialize()
+    
+    print("🔍 执行单次检查...\n")
+    
+    result = await engine.run_once()
+    
+    print("\n检查结果:")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    
+    await engine.cleanup()
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description="加密货币智能监控系统",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+    python main.py              # 启动监控
+    python main.py --test       # 测试模式
+    python main.py --once       # 执行一次检查
+    python main.py --add BTC    # 添加监控币种
+    python main.py --remove BTC # 移除监控币种
+    python main.py --status     # 查看状态
+    python main.py --check      # 检查配置
+        """
+    )
+    
+    parser.add_argument(
+        '--test', 
+        action='store_true',
+        help='测试模式，检查各服务连接'
+    )
+    
+    parser.add_argument(
+        '--once',
+        action='store_true',
+        help='执行一次检查'
+    )
+    
+    parser.add_argument(
+        '--add',
+        type=str,
+        metavar='SYMBOL',
+        help='添加监控币种'
+    )
+    
+    parser.add_argument(
+        '--remove',
+        type=str,
+        metavar='SYMBOL',
+        help='移除监控币种'
+    )
+    
+    parser.add_argument(
+        '--status',
+        action='store_true',
+        help='显示系统状态'
+    )
+    
+    parser.add_argument(
+        '--check',
+        action='store_true',
+        help='检查配置'
+    )
+    
+    parser.add_argument(
+        '--config',
+        type=str,
+        metavar='PATH',
+        help='指定配置文件路径'
+    )
+    
+    parser.add_argument(
+        '--env',
+        type=str,
+        metavar='PATH',
+        help='指定环境变量文件路径'
+    )
+    
+    args = parser.parse_args()
+    
+    # 加载配置
+    if args.config or args.env:
+        load_config(args.config, args.env)
+    
+    # 执行对应操作
+    if args.test:
+        print_banner()
+        check_config()
+        asyncio.run(test_connection())
+    
+    elif args.once:
+        asyncio.run(run_once())
+    
+    elif args.add:
+        asyncio.run(add_symbol(args.add))
+    
+    elif args.remove:
+        asyncio.run(remove_symbol(args.remove))
+    
+    elif args.status:
+        asyncio.run(show_status())
+    
+    elif args.check:
+        print_banner()
+        check_config()
+    
+    else:
+        # 默认：启动监控
+        asyncio.run(run_monitor())
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="market.py">
+"""
+市场数据模块
+支持多交易所数据获取、重试机制、缓存优化
+"""
+import asyncio
+import time
+from typing import Any, Dict, List, Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from config import get_config
+from logger import get_market_logger
+
+
+class MarketDataFetcher:
+    """
+    市场数据获取器
+    支持重试机制、请求限流、数据缓存
+    """
+    
+    def __init__(self):
+        """初始化市场数据获取器"""
+        self.config = get_config().market
+        self.logger = get_market_logger()
+        
+        # 创建带重试机制的session
+        self.session = self._create_session()
+        
+        # 缓存
+        self._cache: Dict[str, Any] = {}
+        self._cache_time: float = 0
+        self._cache_ttl: float = 1.0  # 缓存有效期（秒）
+    
+    def _create_session(self) -> requests.Session:
+        """创建带重试机制的requests session"""
+        session = requests.Session()
+        
+        # 配置重试策略
+        retry_strategy = Retry(
+            total=self.config.max_retries,
+            backoff_factor=self.config.retry_delay,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        return session
+    
+    def get_all_prices(self, use_cache: bool = True) -> Optional[Dict[str, float]]:
+        """
+        获取全市场交易对价格
+        
+        Args:
+            use_cache: 是否使用缓存
+        
+        Returns:
+            价格映射字典，格式: {"BTCUSDT": 60000.0, ...}
+        """
+        # 检查缓存
+        if use_cache and self._cache and (time.time() - self._cache_time < self._cache_ttl):
+            self.logger.debug("使用缓存的市场数据")
+            return self._cache
+        
+        try:
+            self.logger.debug(f"请求市场数据: {self.config.base_url}")
+            
+            response = self.session.get(
+                self.config.base_url,
+                timeout=self.config.timeout
+            )
+            
+            if response.status_code != 200:
+                self.logger.warning(f"市场数据请求失败: HTTP {response.status_code}")
+                return self._cache if self._cache else None
+            
+            data = response.json()
+            
+            # 将列表转换为字典，实现O(1)查询
+            price_map = {}
+            for item in data:
+                symbol = item.get('symbol', '')
+                price_str = item.get('price', '0')
+                try:
+                    price_map[symbol] = float(price_str)
+                except (ValueError, TypeError):
+                    continue
+            
+            # 更新缓存
+            self._cache = price_map
+            self._cache_time = time.time()
+            
+            self.logger.debug(f"获取到 {len(price_map)} 个交易对价格")
+            return price_map
+            
+        except requests.exceptions.Timeout:
+            self.logger.error("市场数据请求超时")
+            return self._cache if self._cache else None
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"市场数据请求异常: {e}")
+            return self._cache if self._cache else None
+            
+        except Exception as e:
+            self.logger.exception(f"市场数据处理异常: {e}")
+            return self._cache if self._cache else None
+    
+    def get_price(self, symbol: str, use_cache: bool = True) -> Optional[float]:
+        """
+        获取单个交易对价格
+        
+        Args:
+            symbol: 交易对名称（如 BTCUSDT）
+            use_cache: 是否使用缓存
+        
+        Returns:
+            价格，获取失败返回None
+        """
+        price_map = self.get_all_prices(use_cache=use_cache)
+        if price_map:
+            return price_map.get(symbol)
+        return None
+    
+    def get_prices(
+        self, 
+        symbols: List[str], 
+        use_cache: bool = True
+    ) -> Dict[str, Optional[float]]:
+        """
+        批量获取多个交易对价格
+        
+        Args:
+            symbols: 交易对名称列表
+            use_cache: 是否使用缓存
+        
+        Returns:
+            价格映射字典
+        """
+        price_map = self.get_all_prices(use_cache=use_cache)
+        if not price_map:
+            return {s: None for s in symbols}
+        
+        return {s: price_map.get(s) for s in symbols}
+    
+    def clear_cache(self):
+        """清空缓存"""
+        self._cache = {}
+        self._cache_time = 0
+        self.logger.debug("市场数据缓存已清空")
+    
+    def close(self):
+        """关闭session"""
+        self.session.close()
+        self.logger.debug("市场数据session已关闭")
+
+
+class MarketDataAsyncFetcher:
+    """
+    异步市场数据获取器
+    基于aiohttp实现，适合高并发场景
+    """
+    
+    def __init__(self):
+        """初始化异步市场数据获取器"""
+        self.config = get_config().market
+        self.logger = get_market_logger()
+        
+        # 缓存
+        self._cache: Dict[str, Any] = {}
+        self._cache_time: float = 0
+        self._cache_ttl: float = 1.0
+    
+    async def get_all_prices(self, use_cache: bool = True) -> Optional[Dict[str, float]]:
+        """
+        异步获取全市场交易对价格
+        
+        Args:
+            use_cache: 是否使用缓存
+        
+        Returns:
+            价格映射字典
+        """
+        # 检查缓存
+        if use_cache and self._cache and (time.time() - self._cache_time < self._cache_ttl):
+            return self._cache
+        
+        try:
+            import aiohttp
+            
+            timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(self.config.base_url) as response:
+                    if response.status != 200:
+                        self.logger.warning(f"市场数据请求失败: HTTP {response.status}")
+                        return self._cache if self._cache else None
+                    
+                    data = await response.json()
+                    
+                    # 转换为价格映射
+                    price_map = {}
+                    for item in data:
+                        symbol = item.get('symbol', '')
+                        price_str = item.get('price', '0')
+                        try:
+                            price_map[symbol] = float(price_str)
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # 更新缓存
+                    self._cache = price_map
+                    self._cache_time = time.time()
+                    
+                    return price_map
+                    
+        except asyncio.TimeoutError:
+            self.logger.error("市场数据请求超时")
+            return self._cache if self._cache else None
+            
+        except Exception as e:
+            self.logger.error(f"市场数据请求异常: {e}")
+            return self._cache if self._cache else None
+    
+    def clear_cache(self):
+        """清空缓存"""
+        self._cache = {}
+        self._cache_time = 0
+
+
+# 全局实例
+_fetcher: Optional[MarketDataFetcher] = None
+
+
+def get_fetcher() -> MarketDataFetcher:
+    """获取全局市场数据获取器"""
+    global _fetcher
+    if _fetcher is None:
+        _fetcher = MarketDataFetcher()
+    return _fetcher
+
+
+def close_fetcher():
+    """关闭全局市场数据获取器"""
+    global _fetcher
+    if _fetcher:
+        _fetcher.close()
+        _fetcher = None
+</file>
+
+<file path="monitor.py">
+"""
+监控引擎模块
+核心监控逻辑，支持动态币种管理、健康检查、自恢复机制
+"""
+import asyncio
+import signal
+import sys
+import time
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional, Set
+
+from config import get_config, MonitorConfig
+from logger import get_monitor_logger
+from market import get_fetcher, close_fetcher
+from ai_service import get_ai_service, close_ai_service
+from notifier import get_notifier, close_notifier
+from storage import get_storage, close_storage
+
+
+class PriceState:
+    """
+    币种价格状态管理
+    """
+    
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.last_price: float = 0.0
+        self.last_alert_time: Optional[datetime] = None
+        self.last_check_time: Optional[datetime] = None
+        self.consecutive_changes: List[float] = []  # 连续波动记录
+        self.max_consecutive: int = 5
+    
+    def update_price(self, price: float) -> float:
+        """
+        更新价格，返回波动百分比
+        
+        Args:
+            price: 新价格
+        
+        Returns:
+            波动百分比
+        """
+        if self.last_price == 0.0:
+            self.last_price = price
+            self.last_check_time = datetime.now()
+            return 0.0
+        
+        change = ((price - self.last_price) / self.last_price) * 100
+        
+        # 记录连续波动
+        self.consecutive_changes.append(change)
+        if len(self.consecutive_changes) > self.max_consecutive:
+            self.consecutive_changes.pop(0)
+        
+        self.last_price = price
+        self.last_check_time = datetime.now()
+        
+        return change
+    
+    def get_trend(self) -> str:
+        """
+        分析连续波动趋势
+        
+        Returns:
+            趋势描述: 'up', 'down', 'stable', 'volatile'
+        """
+        if len(self.consecutive_changes) < 3:
+            return 'stable'
+        
+        avg_change = sum(self.consecutive_changes) / len(self.consecutive_changes)
+        
+        # 判断趋势
+        if avg_change > 0.5:
+            return 'up'
+        elif avg_change < -0.5:
+            return 'down'
+        elif max(abs(c) for c in self.consecutive_changes) > 1.0:
+            return 'volatile'
+        else:
+            return 'stable'
+    
+    def can_alert(self, cooldown: int) -> bool:
+        """
+        检查是否可以发送报警
+        
+        Args:
+            cooldown: 冷却时间（秒）
+        
+        Returns:
+            是否可以报警
+        """
+        if self.last_alert_time is None:
+            return True
+        
+        elapsed = (datetime.now() - self.last_alert_time).total_seconds()
+        return elapsed >= cooldown
+    
+    def mark_alerted(self):
+        """标记已报警"""
+        self.last_alert_time = datetime.now()
+
+
+class MonitorEngine:
+    """
+    监控引擎
+    核心监控逻辑实现
+    """
+    
+    def __init__(self):
+        """初始化监控引擎"""
+        self.config = get_config()
+        self.logger = get_monitor_logger()
+        
+        # 组件
+        self.fetcher = get_fetcher()
+        self.ai_service = get_ai_service()
+        self.notifier = get_notifier()
+        self.storage = None  # 异步初始化
+        
+        # 状态
+        self.price_states: Dict[str, PriceState] = {}
+        self.watch_list: Set[str] = set(self.config.monitor.watch_list)
+        self.running = False
+        self.paused = False
+        
+        # 健康检查
+        self.start_time: Optional[datetime] = None
+        self.failure_count = 0
+        self.last_success_time: Optional[datetime] = None
+        
+        # 回调
+        self._on_alert_callbacks: List[Callable] = []
+        self._on_price_update_callbacks: List[Callable] = []
+    
+    async def initialize(self):
+        """异步初始化"""
+        self.storage = await get_storage()
+        
+        # 从数据库恢复状态
+        await self._restore_states()
+        
+        self.logger.info(
+            f"监控引擎初始化完成，监听币种: {list(self.watch_list)}"
+        )
+    
+    async def _restore_states(self):
+        """从数据库恢复币种状态"""
+        if self.storage:
+            states = await self.storage.get_all_symbol_states()
+            for symbol, state in states.items():
+                if symbol in self.watch_list:
+                    price_state = PriceState(symbol)
+                    price_state.last_price = state['last_price']
+                    price_state.last_alert_time = state['last_alert_time']
+                    self.price_states[symbol] = price_state
+                    self.logger.info(
+                        f"恢复 {symbol} 状态: 价格 {state['last_price']}"
+                    )
+    
+    def add_symbol(self, symbol: str):
+        """
+        添加监控币种
+        
+        Args:
+            symbol: 币种符号
+        """
+        if symbol not in self.watch_list:
+            self.watch_list.add(symbol)
+            self.price_states[symbol] = PriceState(symbol)
+            self.logger.info(f"添加监控币种: {symbol}")
+    
+    def remove_symbol(self, symbol: str):
+        """
+        移除监控币种
+        
+        Args:
+            symbol: 币种符号
+        """
+        if symbol in self.watch_list:
+            self.watch_list.discard(symbol)
+            self.price_states.pop(symbol, None)
+            self.logger.info(f"移除监控币种: {symbol}")
+    
+    def get_watch_list(self) -> List[str]:
+        """获取当前监控币种列表"""
+        return list(self.watch_list)
+    
+    def on_alert(self, callback: Callable):
+        """注册报警回调"""
+        self._on_alert_callbacks.append(callback)
+    
+    def on_price_update(self, callback: Callable):
+        """注册价格更新回调"""
+        self._on_price_update_callbacks.append(callback)
+    
+    async def _trigger_alert_callbacks(self, data: Dict[str, Any]):
+        """触发报警回调"""
+        for callback in self._on_alert_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(data)
+                else:
+                    callback(data)
+            except Exception as e:
+                self.logger.error(f"报警回调执行失败: {e}")
+    
+    async def _trigger_price_update_callbacks(self, data: Dict[str, Any]):
+        """触发价格更新回调"""
+        for callback in self._on_price_update_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(data)
+                else:
+                    callback(data)
+            except Exception as e:
+                self.logger.error(f"价格更新回调执行失败: {e}")
+    
+    async def check_prices(self) -> Dict[str, Dict[str, Any]]:
+        """
+        检查价格波动
+        
+        Returns:
+            各币种检查结果
+        """
+        results = {}
+        
+        # 获取全市场数据
+        price_map = self.fetcher.get_all_prices()
+        
+        if not price_map:
+            self.failure_count += 1
+            self.logger.warning(
+                f"获取市场数据失败，连续失败次数: {self.failure_count}"
+            )
+            return results
+        
+        # 重置失败计数
+        self.failure_count = 0
+        self.last_success_time = datetime.now()
+        
+        # 检查每个币种
+        for symbol in list(self.watch_list):
+            pair_name = f"{symbol}USDT"
+            current_price = price_map.get(pair_name)
+            
+            if current_price is None:
+                self.logger.warning(f"未找到交易对: {pair_name}")
+                continue
+            
+            # 获取或创建状态
+            if symbol not in self.price_states:
+                self.price_states[symbol] = PriceState(symbol)
+            
+            state = self.price_states[symbol]
+            
+            # 更新价格并计算波动
+            change = state.update_price(current_price)
+            
+            result = {
+                'symbol': symbol,
+                'price': current_price,
+                'change': change,
+                'trend': state.get_trend(),
+                'should_alert': False,
+                'alert_level': None
+            }
+            
+            # 检查是否需要报警
+            if change != 0.0:
+                abs_change = abs(change)
+                thresholds = self.config.monitor.thresholds
+                
+                # 确定报警级别
+                if abs_change >= thresholds.major:
+                    result['alert_level'] = 'major'
+                elif abs_change >= thresholds.moderate:
+                    result['alert_level'] = 'moderate'
+                elif abs_change >= thresholds.minor:
+                    result['alert_level'] = 'minor'
+                
+                # 检查是否可以报警（冷却时间）
+                if result['alert_level'] and state.can_alert(self.config.monitor.cooldown):
+                    result['should_alert'] = True
+            
+            results[symbol] = result
+            
+            # 保存价格记录
+            if self.storage:
+                await self.storage.save_price(symbol, current_price, change)
+            
+            # 触发价格更新回调
+            await self._trigger_price_update_callbacks(result)
+        
+        return results
+    
+    async def process_alert(self, result: Dict[str, Any]) -> bool:
+        """
+        处理报警
+        
+        Args:
+            result: 检查结果
+        
+        Returns:
+            是否处理成功
+        """
+        symbol = result['symbol']
+        price = result['price']
+        change = result['change']
+        level = result['alert_level']
+        
+        self.logger.info(
+            f"🚨 {symbol} 波动达 {change:+.2f}%，触发 {level} 级报警"
+        )
+        
+        # 获取波动级别和风格
+        thresholds = self.config.monitor.thresholds
+        _, style = thresholds.get_level(change)
+        
+        # 生成AI点评
+        ai_comment = self.ai_service.generate_comment(
+            symbol, price, change, level, style
+        )
+        
+        # 发送通知
+        success = self.notifier.send_alert(
+            symbol, price, change, level, ai_comment
+        )
+        
+        if success:
+            # 更新状态
+            state = self.price_states.get(symbol)
+            if state:
+                state.mark_alerted()
+            
+            # 保存报警记录
+            if self.storage:
+                await self.storage.save_alert(
+                    symbol, price, change, level, ai_comment
+                )
+                await self.storage.update_symbol_state(
+                    symbol, price, datetime.now()
+                )
+            
+            # 触发报警回调
+            await self._trigger_alert_callbacks({
+                'symbol': symbol,
+                'price': price,
+                'change': change,
+                'level': level,
+                'ai_comment': ai_comment,
+                'sent_at': datetime.now().isoformat()
+            })
+        
+        return success
+    
+    async def run_once(self) -> Dict[str, Any]:
+        """
+        执行一次监控检查
+        
+        Returns:
+            检查结果汇总
+        """
+        results = await self.check_prices()
+        
+        alerts = []
+        for symbol, result in results.items():
+            if result.get('should_alert'):
+                alert_success = await self.process_alert(result)
+                alerts.append({
+                    'symbol': symbol,
+                    'success': alert_success
+                })
+        
+        return {
+            'total_checked': len(results),
+            'alerts_triggered': len(alerts),
+            'alerts': alerts,
+            'timestamp': datetime.now().isoformat(),
+            'results': results  # 包含详细价格结果
+        }
+    
+    async def run_forever(self):
+        """
+        持续运行监控循环
+        """
+        self.running = True
+        self.start_time = datetime.now()
+        
+        self.logger.info(f"🚀 监控引擎启动，间隔: {self.config.monitor.interval}秒")
+        
+        while self.running:
+            try:
+                if not self.paused:
+                    summary = await self.run_once()
+                    
+                    # 打印状态
+                    self._print_status(summary)
+                    
+                    # 健康检查
+                    if self.config.health_check.enabled:
+                        await self._health_check()
+                
+                # 等待下次检查
+                await asyncio.sleep(self.config.monitor.interval)
+                
+            except asyncio.CancelledError:
+                self.logger.info("监控循环被取消")
+                break
+            except Exception as e:
+                self.logger.exception(f"监控循环异常: {e}")
+                await asyncio.sleep(5)  # 异常后等待5秒
+    
+    def _print_status(self, summary: Dict[str, Any]):
+        """打印状态信息"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        checked = summary['total_checked']
+        alerts = summary['alerts_triggered']
+        
+        status = "⏸️ 暂停" if self.paused else "✅ 运行中"
+        
+        print(
+            f"[{timestamp}] {status} | "
+            f"检查: {checked} | 报警: {alerts}"
+        )
+        
+        # 打印各币种价格详情
+        results = summary.get('results', {})
+        for symbol, result in results.items():
+            price = result.get('price', 0)
+            change = result.get('change', 0)
+            change_str = f"{change:+.2f}%"
+            
+            # 根据波动方向选择 emoji
+            if change > 0:
+                emoji = "📈"
+            elif change < 0:
+                emoji = "📉"
+            else:
+                emoji = "➖"
+            
+            print(f"  {emoji} {symbol}: ${price:,.4f} ({change_str})")
+    
+    async def _health_check(self):
+        """
+        健康检查
+        """
+        max_failures = self.config.health_check.max_failures
+        
+        if self.failure_count >= max_failures:
+            self.logger.error(
+                f"连续失败 {self.failure_count} 次，触发健康检查"
+            )
+            
+            # 发送健康检查通知
+            self.notifier.send_health_check({
+                'healthy': False,
+                'uptime': str(datetime.now() - self.start_time) if self.start_time else 'N/A',
+                'last_check': self.last_success_time.isoformat() if self.last_success_time else 'N/A',
+                'issues': f'连续失败 {self.failure_count} 次'
+            })
+            
+            # 自恢复
+            if self.config.health_check.auto_restart:
+                self.logger.info("尝试自恢复...")
+                self.fetcher.clear_cache()
+                self.failure_count = 0
+    
+    def pause(self):
+        """暂停监控"""
+        self.paused = True
+        self.logger.info("监控已暂停")
+    
+    def resume(self):
+        """恢复监控"""
+        self.paused = False
+        self.logger.info("监控已恢复")
+    
+    def stop(self):
+        """停止监控"""
+        self.running = False
+        self.logger.info("监控引擎停止")
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取监控状态"""
+        uptime = None
+        if self.start_time:
+            uptime = str(datetime.now() - self.start_time)
+        
+        return {
+            'running': self.running,
+            'paused': self.paused,
+            'uptime': uptime,
+            'watch_list': list(self.watch_list),
+            'watch_list_count': len(self.watch_list),
+            'failure_count': self.failure_count,
+            'last_success': self.last_success_time.isoformat() if self.last_success_time else None,
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+        }
+    
+    async def cleanup(self):
+        """清理资源"""
+        self.logger.info("清理资源...")
+        
+        # 保存状态到数据库
+        if self.storage:
+            for symbol, state in self.price_states.items():
+                await self.storage.update_symbol_state(
+                    symbol, state.last_price, state.last_alert_time
+                )
+            
+            # 清理过期数据
+            await self.storage.cleanup_old_data(
+                self.config.storage.history_retention_days
+            )
+        
+        # 关闭连接
+        close_fetcher()
+        close_ai_service()
+        close_notifier()
+        await close_storage()
+        
+        self.logger.info("资源清理完成")
+
+
+async def main():
+    """主函数"""
+    engine = MonitorEngine()
+    await engine.initialize()
+    
+    # 注册信号处理
+    def signal_handler(sig, frame):
+        print("\n收到停止信号...")
+        engine.stop()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        await engine.run_forever()
+    finally:
+        await engine.cleanup()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+</file>
+
+<file path="notifier.py">
+"""
+通知服务模块
+支持Telegram通知、通知限流、消息队列
+"""
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from config import get_config
+from logger import get_notifier_logger
+
+
+class RateLimiter:
+    """
+    通知限流器
+    防止消息刷屏
+    """
+    
+    def __init__(self, max_per_minute: int = 5, min_interval: int = 60):
+        """
+        初始化限流器
+        
+        Args:
+            max_per_minute: 每分钟最大通知数
+            min_interval: 相同目标最小间隔（秒）
+        """
+        self.max_per_minute = max_per_minute
+        self.min_interval = min_interval
+        
+        # 记录发送时间
+        self._send_times: List[float] = []
+        self._last_send_time: Dict[str, float] = defaultdict(float)
+    
+    def can_send(self, target: str = "default") -> bool:
+        """
+        检查是否可以发送
+        
+        Args:
+            target: 目标标识（如币种名称）
+        
+        Returns:
+            是否允许发送
+        """
+        now = time.time()
+        
+        # 清理过期记录（保留最近1分钟）
+        self._send_times = [t for t in self._send_times if now - t < 60]
+        
+        # 检查每分钟限制
+        if len(self._send_times) >= self.max_per_minute:
+            return False
+        
+        # 检查目标间隔
+        last_time = self._last_send_time.get(target, 0)
+        if now - last_time < self.min_interval:
+            return False
+        
+        return True
+    
+    def record_send(self, target: str = "default"):
+        """
+        记录发送
+        
+        Args:
+            target: 目标标识
+        """
+        now = time.time()
+        self._send_times.append(now)
+        self._last_send_time[target] = now
+    
+    def get_wait_time(self, target: str = "default") -> float:
+        """
+        获取需要等待的时间
+        
+        Args:
+            target: 目标标识
+        
+        Returns:
+            需要等待的秒数，0表示可以立即发送
+        """
+        now = time.time()
+        
+        # 检查目标间隔
+        last_time = self._last_send_time.get(target, 0)
+        interval_wait = max(0, self.min_interval - (now - last_time))
+        
+        # 检查每分钟限制
+        self._send_times = [t for t in self._send_times if now - t < 60]
+        if len(self._send_times) >= self.max_per_minute:
+            # 需要等待最早的记录过期
+            oldest = min(self._send_times)
+            rate_wait = max(0, 60 - (now - oldest))
+        else:
+            rate_wait = 0
+        
+        return max(interval_wait, rate_wait)
+
+
+class TelegramNotifier:
+    """
+    Telegram通知服务
+    """
+    
+    def __init__(self):
+        """初始化Telegram通知服务"""
+        self.config = get_config().notification
+        self.logger = get_notifier_logger()
+        
+        # 创建带重试机制的session
+        self.session = self._create_session()
+        
+        # 限流器
+        self.rate_limiter = RateLimiter(
+            max_per_minute=self.config.rate_limit.max_per_minute,
+            min_interval=self.config.rate_limit.min_interval
+        )
+    
+    def _create_session(self) -> requests.Session:
+        """创建带重试机制的requests session"""
+        session = requests.Session()
+        
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        return session
+    
+    def send_message(
+        self,
+        text: str,
+        parse_mode: Optional[str] = None,
+        disable_notification: bool = False
+    ) -> bool:
+        """
+        发送Telegram消息
+        
+        Args:
+            text: 消息文本
+            parse_mode: 解析模式 (Markdown/HTML)
+            disable_notification: 是否静音
+        
+        Returns:
+            是否发送成功
+        """
+        if not self.config.telegram.enabled:
+            self.logger.debug("Telegram通知已禁用")
+            return False
+        
+        config = get_config()
+        
+        # 构建URL
+        url = (
+            f"{self.config.telegram.base_url}/"
+            f"bot{config.tg_bot_token}/sendMessage"
+        )
+        
+        payload = {
+            "chat_id": config.tg_chat_id,
+            "text": text,
+            "disable_notification": disable_notification
+        }
+        
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        
+        try:
+            self.logger.debug("发送Telegram消息...")
+            
+            response = self.session.post(
+                url,
+                json=payload,
+                timeout=self.config.telegram.timeout
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    self.logger.info("Telegram消息发送成功")
+                    return True
+                else:
+                    self.logger.error(f"Telegram API错误: {data.get('description')}")
+                    return False
+            else:
+                self.logger.error(f"Telegram请求失败: HTTP {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            self.logger.error("Telegram请求超时")
+            return False
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Telegram请求异常: {e}")
+            return False
+            
+        except Exception as e:
+            self.logger.exception(f"Telegram发送异常: {e}")
+            return False
+    
+    def send_alert(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str,
+        ai_comment: str
+    ) -> bool:
+        """
+        发送价格报警通知
+        
+        Args:
+            symbol: 币种符号
+            price: 当前价格
+            change_percent: 波动百分比
+            level: 报警级别
+            ai_comment: AI点评
+        
+        Returns:
+            是否发送成功
+        """
+        # 限流检查
+        if not self.rate_limiter.can_send(symbol):
+            wait_time = self.rate_limiter.get_wait_time(symbol)
+            self.logger.warning(
+                f"通知限流中，{symbol} 需等待 {wait_time:.1f} 秒"
+            )
+            return False
+        
+        # 构建消息
+        direction = "📈" if change_percent > 0 else "📉"
+        level_emoji = {"minor": "🔔", "moderate": "⚠️", "major": "🚨"}.get(level, "🔔")
+        
+        message = f"""{level_emoji} **{symbol} 异动警报**
+
+{direction} 现价: ${price:,.4f}
+📊 波动: {change_percent:+.2f}%
+🎯 级别: {level.upper()}
+
+💭 {ai_comment}
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        
+        success = self.send_message(message, parse_mode="Markdown")
+        
+        if success:
+            self.rate_limiter.record_send(symbol)
+        
+        return success
+    
+    def send_daily_summary(self, summary: Dict) -> bool:
+        """
+        发送每日汇总
+        
+        Args:
+            summary: 汇总数据
+        
+        Returns:
+            是否发送成功
+        """
+        message = f"""📊 **每日行情汇总**
+
+📈 监控币种: {summary.get('symbols_count', 0)}
+🔔 今日报警: {summary.get('today_alerts', 0)}
+💰 价格记录: {summary.get('total_prices', 0)}
+
+{summary.get('top_gainers', '')}
+{summary.get('top_losers', '')}
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return self.send_message(message, parse_mode="Markdown")
+    
+    def send_health_check(self, status: Dict) -> bool:
+        """
+        发送健康检查通知
+        
+        Args:
+            status: 健康状态
+        
+        Returns:
+            是否发送成功
+        """
+        status_emoji = "✅" if status.get('healthy', False) else "❌"
+        
+        message = f"""{status_emoji} **系统健康检查**
+
+运行状态: {'正常' if status.get('healthy') else '异常'}
+运行时间: {status.get('uptime', 'N/A')}
+最后检查: {status.get('last_check', 'N/A')}
+
+问题: {status.get('issues', '无')}
+"""
+        return self.send_message(message, parse_mode="Markdown")
+    
+    def close(self):
+        """关闭session"""
+        self.session.close()
+        self.logger.debug("Telegram session已关闭")
+
+
+class Notifier:
+    """
+    统一通知服务
+    支持多渠道通知
+    """
+    
+    def __init__(self):
+        """初始化通知服务"""
+        self.logger = get_notifier_logger()
+        self.telegram = TelegramNotifier()
+    
+    def send_alert(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str,
+        ai_comment: str
+    ) -> bool:
+        """
+        发送报警通知
+        
+        Args:
+            symbol: 币种符号
+            price: 当前价格
+            change_percent: 波动百分比
+            level: 报警级别
+            ai_comment: AI点评
+        
+        Returns:
+            是否发送成功
+        """
+        return self.telegram.send_alert(
+            symbol, price, change_percent, level, ai_comment
+        )
+    
+    def send_daily_summary(self, summary: Dict) -> bool:
+        """发送每日汇总"""
+        return self.telegram.send_daily_summary(summary)
+    
+    def send_health_check(self, status: Dict) -> bool:
+        """发送健康检查"""
+        return self.telegram.send_health_check(status)
+    
+    def close(self):
+        """关闭所有通知渠道"""
+        self.telegram.close()
+
+
+# 全局实例
+_notifier: Optional[Notifier] = None
+
+
+def get_notifier() -> Notifier:
+    """获取全局通知服务实例"""
+    global _notifier
+    if _notifier is None:
+        _notifier = Notifier()
+    return _notifier
+
+
+def close_notifier():
+    """关闭全局通知服务实例"""
+    global _notifier
+    if _notifier:
+        _notifier.close()
+        _notifier = None
+</file>
+
+<file path="requirements.txt">
+# 核心依赖
+requests>=2.31.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+aiohttp>=3.9.0
+
+# 数据持久化
+aiosqlite>=0.19.0
+
+# 日志增强
+colorlog>=6.8.0
+
+# 可选：Redis 支持
+# redis>=5.0.0
+
+# 可选：WebSocket 支持
+# websockets>=12.0
+
+# 可选：数据分析
+# pandas>=2.1.0
+# numpy>=1.26.0
+</file>
+
+<file path="storage.py">
+"""
+数据持久化模块
+支持SQLite存储历史价格数据、报警记录等
+"""
+import asyncio
+import json
+import sqlite3
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import aiosqlite
+
+from config import get_config
+from logger import get_storage_logger
+
+
+class Storage:
+    """
+    异步存储服务
+    提供价格历史、报警记录的持久化存储
+    """
+    
+    def __init__(self, db_path: Optional[str] = None):
+        """
+        初始化存储服务
+        
+        Args:
+            db_path: 数据库路径，默认从配置获取
+        """
+        self.db_path = db_path or get_config().storage.sqlite.path
+        self.logger = get_storage_logger()
+        self._db: Optional[aiosqlite.Connection] = None
+
+    @property
+    def db(self) -> aiosqlite.Connection:
+        """获取数据库连接，确保非空"""
+        if self._db is None:
+            raise RuntimeError("数据库未连接，请先调用 connect()")
+        return self._db
+    
+    async def connect(self):
+        """建立数据库连接"""
+        if self._db is None:
+            # 确保数据库目录存在
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._db = await aiosqlite.connect(self.db_path)
+            await self._init_tables()
+            self.logger.info(f"数据库连接成功: {self.db_path}")
+    
+    async def close(self):
+        """关闭数据库连接"""
+        if self._db:
+            await self.db.close()
+            self._db = None
+            self.logger.info("数据库连接已关闭")
+    
+    async def _init_tables(self):
+        """初始化数据表"""
+        # 价格历史表
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                price REAL NOT NULL,
+                change_percent REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 报警记录表
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                price REAL NOT NULL,
+                change_percent REAL NOT NULL,
+                alert_level TEXT NOT NULL,
+                ai_comment TEXT,
+                telegram_message_id INTEGER,
+                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 币种状态表（用于持久化last_prices）
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS symbol_state (
+                symbol TEXT PRIMARY KEY,
+                last_price REAL NOT NULL,
+                last_alert_time DATETIME,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 创建索引
+        await self.db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_price_history_symbol 
+            ON price_history(symbol)
+        ''')
+        await self.db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_price_history_timestamp 
+            ON price_history(timestamp)
+        ''')
+        await self.db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alerts_symbol 
+            ON alerts(symbol)
+        ''')
+        await self.db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alerts_sent_at 
+            ON alerts(sent_at)
+        ''')
+        
+        await self.db.commit()
+        self.logger.debug("数据表初始化完成")
+    
+    async def save_price(
+        self, 
+        symbol: str, 
+        price: float, 
+        change_percent: Optional[float] = None
+    ):
+        """
+        保存价格记录
+        
+        Args:
+            symbol: 币种符号
+            price: 当前价格
+            change_percent: 波动百分比
+        """
+        await self.db.execute(
+            '''
+            INSERT INTO price_history (symbol, price, change_percent)
+            VALUES (?, ?, ?)
+            ''',
+            (symbol, price, change_percent)
+        )
+        await self.db.commit()
+    
+    async def save_alert(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        alert_level: str,
+        ai_comment: Optional[str] = None,
+        telegram_message_id: Optional[int] = None
+    ):
+        """
+        保存报警记录
+        
+        Args:
+            symbol: 币种符号
+            price: 当前价格
+            change_percent: 波动百分比
+            alert_level: 报警级别
+            ai_comment: AI点评
+            telegram_message_id: Telegram消息ID
+        """
+        await self.db.execute(
+            '''
+            INSERT INTO alerts 
+            (symbol, price, change_percent, alert_level, ai_comment, telegram_message_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (symbol, price, change_percent, alert_level, ai_comment, telegram_message_id)
+        )
+        await self.db.commit()
+        self.logger.info(f"保存报警记录: {symbol} {change_percent:+.2f}% [{alert_level}]")
+    
+    async def update_symbol_state(
+        self, 
+        symbol: str, 
+        last_price: float,
+        last_alert_time: Optional[datetime] = None
+    ):
+        """
+        更新币种状态
+        
+        Args:
+            symbol: 币种符号
+            last_price: 最新价格
+            last_alert_time: 最后报警时间
+        """
+        await self.db.execute(
+            '''
+            INSERT INTO symbol_state (symbol, last_price, last_alert_time, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(symbol) DO UPDATE SET
+                last_price = excluded.last_price,
+                last_alert_time = excluded.last_alert_time,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (symbol, last_price, last_alert_time)
+        )
+        await self.db.commit()
+    
+    async def get_symbol_state(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        获取币种状态
+        
+        Args:
+            symbol: 币种符号
+        
+        Returns:
+            币种状态字典，包含 last_price, last_alert_time 等
+        """
+        async with self.db.execute(
+            'SELECT last_price, last_alert_time FROM symbol_state WHERE symbol = ?',
+            (symbol,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    'last_price': row[0],
+                    'last_alert_time': datetime.fromisoformat(row[1]) if row[1] else None
+                }
+            return None
+    
+    async def get_all_symbol_states(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取所有币种状态
+        
+        Returns:
+            币种状态字典，key为symbol
+        """
+        states = {}
+        async with self.db.execute(
+            'SELECT symbol, last_price, last_alert_time FROM symbol_state'
+        ) as cursor:
+            async for row in cursor:
+                states[row[0]] = {
+                    'last_price': row[1],
+                    'last_alert_time': datetime.fromisoformat(row[2]) if row[2] else None
+                }
+        return states
+    
+    async def get_price_history(
+        self,
+        symbol: str,
+        hours: int = 24,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        获取价格历史
+        
+        Args:
+            symbol: 币种符号
+            hours: 查询最近N小时
+            limit: 最大返回数量
+        
+        Returns:
+            价格历史列表
+        """
+        since = datetime.now() - timedelta(hours=hours)
+        async with self.db.execute(
+            '''
+            SELECT price, change_percent, timestamp 
+            FROM price_history 
+            WHERE symbol = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            ''',
+            (symbol, since.isoformat(), limit)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    'price': row[0],
+                    'change_percent': row[1],
+                    'timestamp': row[2]
+                }
+                for row in rows
+            ]
+    
+    async def get_alert_history(
+        self,
+        symbol: Optional[str] = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        获取报警历史
+        
+        Args:
+            symbol: 币种符号，为None时查询所有
+            hours: 查询最近N小时
+            limit: 最大返回数量
+        
+        Returns:
+            报警历史列表
+        """
+        since = datetime.now() - timedelta(hours=hours)
+        
+        if symbol:
+            query = '''
+                SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at
+                FROM alerts 
+                WHERE symbol = ? AND sent_at >= ?
+                ORDER BY sent_at DESC
+                LIMIT ?
+            '''
+            params = (symbol, since.isoformat(), limit)
+        else:
+            query = '''
+                SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at
+                FROM alerts 
+                WHERE sent_at >= ?
+                ORDER BY sent_at DESC
+                LIMIT ?
+            '''
+            params = (since.isoformat(), limit)
+        
+        async with self.db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    'symbol': row[0],
+                    'price': row[1],
+                    'change_percent': row[2],
+                    'alert_level': row[3],
+                    'ai_comment': row[4],
+                    'sent_at': row[5]
+                }
+                for row in rows
+            ]
+    
+    async def cleanup_old_data(self, retention_days: int = 30):
+        """
+        清理过期数据
+        
+        Args:
+            retention_days: 数据保留天数
+        """
+        cutoff = datetime.now() - timedelta(days=retention_days)
+        
+        # 清理价格历史
+        result = await self.db.execute(
+            'DELETE FROM price_history WHERE timestamp < ?',
+            (cutoff.isoformat(),)
+        )
+        price_deleted = result.rowcount
+        
+        # 清理报警记录
+        result = await self.db.execute(
+            'DELETE FROM alerts WHERE sent_at < ?',
+            (cutoff.isoformat(),)
+        )
+        alert_deleted = result.rowcount
+        
+        await self.db.commit()
+        self.logger.info(
+            f"清理过期数据完成: 价格记录 {price_deleted} 条, 报警记录 {alert_deleted} 条"
+        )
+    
+    async def get_statistics(self) -> Dict[str, Any]:
+        """
+        获取统计信息
+        
+        Returns:
+            统计信息字典
+        """
+        stats = {}
+        
+        # 价格记录总数
+        async with self.db.execute(
+            'SELECT COUNT(*) FROM price_history'
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats['total_prices'] = row[0] if row else 0
+        
+        # 报警记录总数
+        async with self.db.execute(
+            'SELECT COUNT(*) FROM alerts'
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats['total_alerts'] = row[0] if row else 0
+        
+        # 今日报警数
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        async with self.db.execute(
+            'SELECT COUNT(*) FROM alerts WHERE sent_at >= ?',
+            (today.isoformat(),)
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats['today_alerts'] = row[0] if row else 0
+        
+        # 监控币种数
+        async with self.db.execute(
+            'SELECT COUNT(*) FROM symbol_state'
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats['monitored_symbols'] = row[0] if row else 0
+        
+        return stats
+
+
+# 全局存储实例
+_storage: Optional[Storage] = None
+
+
+async def get_storage() -> Storage:
+    """获取全局存储实例"""
+    global _storage
+    if _storage is None:
+        _storage = Storage()
+        await _storage.connect()
+    return _storage
+
+
+async def close_storage():
+    """关闭全局存储实例"""
+    global _storage
+    if _storage:
+        await _storage.close()
+        _storage = None
+</file>
+
+</files>

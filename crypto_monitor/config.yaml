@@ -108,3 +108,8 @@ health_check:
   max_failures: 3
   # 失败后自动重启
   auto_restart: true
+
+# 本地服务配置
+service:
+  host: "0.0.0.0"
+  port: 28593
