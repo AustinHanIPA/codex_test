@@ -24,6 +24,10 @@ monitor:
   
   # 价格稳定期（秒）- 避免同一波段连环报警
   cooldown: 60
+  # 组合规则：最小市值过滤，0 表示不启用
+  min_market_cap_usd: 0
+  # 组合规则：最小 24h 成交额过滤，0 表示不启用
+  min_volume_24h_usd: 0
 
 # 市场数据源配置
 market:
@@ -108,6 +112,19 @@ health_check:
   max_failures: 3
   # 失败后自动重启
   auto_restart: true
+
+# 链上事件配置
+onchain:
+  enabled: true
+  tracked_addresses: []
+  whale_transfer_threshold_usd: 50000
+  webhook_auth_token: ""
+
+# 报告层配置
+reporting:
+  output_dir: "./reports"
+  default_lookback_hours: 24
+  major_only: true
 
 # 本地服务配置
 service:

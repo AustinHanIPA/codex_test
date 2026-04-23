@@ -42,6 +42,8 @@ class MonitorConfig:
     interval: int = 30
     thresholds: ThresholdConfig = field(default_factory=ThresholdConfig)
     cooldown: int = 60
+    min_market_cap_usd: float = 0.0
+    min_volume_24h_usd: float = 0.0
 
 
 @dataclass
@@ -134,6 +136,23 @@ class HealthCheckConfig:
 
 
 @dataclass
+class OnchainConfig:
+    """链上事件配置"""
+    enabled: bool = True
+    tracked_addresses: List[str] = field(default_factory=list)
+    whale_transfer_threshold_usd: float = 50000.0
+    webhook_auth_token: str = ""
+
+
+@dataclass
+class ReportingConfig:
+    """报告层配置"""
+    output_dir: str = "./reports"
+    default_lookback_hours: int = 24
+    major_only: bool = True
+
+
+@dataclass
 class ServiceConfig:
     """本地 HTTP 服务配置"""
     host: str = "0.0.0.0"
@@ -150,6 +169,8 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    onchain: OnchainConfig = field(default_factory=OnchainConfig)
+    reporting: ReportingConfig = field(default_factory=ReportingConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
     
     # 敏感信息（从环境变量读取）
@@ -323,6 +344,16 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
     if 'health_check' in config_data:
         config.health_check = _dict_to_dataclass(
             config_data['health_check'], HealthCheckConfig
+        )
+
+    if 'onchain' in config_data:
+        config.onchain = _dict_to_dataclass(
+            config_data['onchain'], OnchainConfig
+        )
+
+    if 'reporting' in config_data:
+        config.reporting = _dict_to_dataclass(
+            config_data['reporting'], ReportingConfig
         )
 
     if 'service' in config_data:

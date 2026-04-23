@@ -1,8 +1,8 @@
 """
 核心领域模型。
 
-这些数据结构把市场抓取、AI 洞察和监控状态从实现细节里抽离出来，
-让监控链路像 api-doc-inspect 一样围绕结构化产物流转。
+这些数据结构把市场抓取、AI 洞察、链上事件和监控状态从实现细节里抽离出来，
+让监控链路围绕结构化产物流转。
 """
 from __future__ import annotations
 
@@ -21,17 +21,42 @@ class MarketSnapshot:
     price_change_percent_24h: Optional[float] = None
     volume_24h: Optional[float] = None
     market_cap: Optional[float] = None
+    liquidity_usd: Optional[float] = None
+    provider: str = "market"
+    sources: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class AIInsight:
-    """AI 输出的结构化短评。"""
+    """AI 输出的结构化分析结果。"""
 
     comment: str
     sentiment: str = "neutral"
+    event_type: str = "price_movement"
     risk_hint: str = ""
+    suggested_action: str = ""
+    confidence: float = 0.0
     raw_text: str = ""
+
+
+@dataclass
+class OnchainEvent:
+    """链上事件。"""
+
+    event_id: str
+    source: str
+    event_type: str
+    address: str = ""
+    counterparty: str = ""
+    symbol: str = ""
+    amount: Optional[float] = None
+    amount_usd: Optional[float] = None
+    direction: str = "unknown"
+    tx_signature: str = ""
+    description: str = ""
+    observed_at: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
