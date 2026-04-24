@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "crypto_monitor"))
 
 from config import get_config
 from storage import Storage
-from models import AIInsight, OnchainEvent
+from models import AIInsight, OnchainEvent, QuantSignal
 from reporting import ReportService
 
 
@@ -42,6 +42,9 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
 
         stats = await self.storage.get_statistics()
         self.assertEqual(stats["total_prices"], 2)
+
+        history = await self.storage.get_price_history("BTC")
+        self.assertEqual(history[0]["volume_24h"], None)
 
     async def test_save_onchain_event_updates_statistics(self):
         event = OnchainEvent(
@@ -105,6 +108,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             insight=AIInsight(comment="🚀 放量突破", sentiment="bullish", confidence=0.8),
             rule_reasons=["price change +4.20% >= major threshold"],
             rule_tags=["momentum"],
+            quant_signal=QuantSignal(symbol="BTC", signal="STRONG_BUY", score=80, reasons=["RSI oversold"]),
         )
 
         report = await ReportService(self.storage).generate_daily_report(lookback_hours=24)

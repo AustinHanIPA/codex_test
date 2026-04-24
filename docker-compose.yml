@@ -1,0 +1,25 @@
+services:
+  crypto-monitor:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - ./crypto_monitor/.env
+    environment:
+      GCP_IP: api-gateway:8080
+      DEXSCREENER_BASE_URL: http://api-gateway:8080/dexscreener
+    volumes:
+      - ./crypto_monitor/data:/app/crypto_monitor/data
+      - ./crypto_monitor/logs:/app/crypto_monitor/logs
+      - ./reports:/app/crypto_monitor/reports
+    ports:
+      - "28593:28593"
+    depends_on:
+      - api-gateway
+
+  api-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:8080"

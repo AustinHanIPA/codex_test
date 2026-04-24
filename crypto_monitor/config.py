@@ -56,6 +56,26 @@ class MarketConfig:
 
 
 @dataclass
+class DexConfig:
+    """DEX 聚合数据源配置。"""
+    enabled: bool = True
+    base_url: str = ""
+    chain_id: str = "solana"
+    token_addresses: Dict[str, str] = field(default_factory=dict)
+    timeout: int = 8
+    max_retries: int = 2
+    retry_delay: int = 2
+
+
+@dataclass
+class QuantConfig:
+    """量化分析配置。"""
+    enabled: bool = True
+    history_hours: int = 72
+    min_score_to_alert: float = 70.0
+
+
+@dataclass
 class AIConfig:
     """AI服务配置"""
     provider: str = "gemini"
@@ -85,6 +105,16 @@ class NotificationConfig:
     """通知配置"""
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+
+
+@dataclass
+class AffiliateConfig:
+    """交易返佣与 Deep Link 配置。"""
+    enabled: bool = False
+    referral_code: str = ""
+    deep_link_template: str = ""
+    free_mode: bool = False
+    mask_symbol: bool = True
 
 
 @dataclass
@@ -179,8 +209,11 @@ class Config:
     """主配置类"""
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     market: MarketConfig = field(default_factory=MarketConfig)
+    dex: DexConfig = field(default_factory=DexConfig)
+    quant: QuantConfig = field(default_factory=QuantConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     notification: NotificationConfig = field(default_factory=NotificationConfig)
+    affiliate: AffiliateConfig = field(default_factory=AffiliateConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
@@ -322,6 +355,12 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
     
     if 'market' in config_data:
         config.market = _dict_to_dataclass(config_data['market'], MarketConfig)
+
+    if 'dex' in config_data:
+        config.dex = _dict_to_dataclass(config_data['dex'], DexConfig)
+
+    if 'quant' in config_data:
+        config.quant = _dict_to_dataclass(config_data['quant'], QuantConfig)
     
     if 'ai' in config_data:
         config.ai = _dict_to_dataclass(config_data['ai'], AIConfig)
@@ -338,6 +377,11 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
             config.notification.rate_limit = _dict_to_dataclass(
                 config_data['notification']['rate_limit'], RateLimitConfig
             )
+
+    if 'affiliate' in config_data:
+        config.affiliate = _dict_to_dataclass(
+            config_data['affiliate'], AffiliateConfig
+        )
     
     if 'storage' in config_data:
         config.storage = _dict_to_dataclass(config_data['storage'], StorageConfig)
@@ -396,6 +440,11 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
             config.ai.base_url = f"http://{gcp_ip}/gemini/v1beta/models"
         if not config.notification.telegram.base_url:
             config.notification.telegram.base_url = f"http://{gcp_ip}/tg"
+        if not config.dex.base_url:
+            config.dex.base_url = f"http://{gcp_ip}/dexscreener"
+
+    if not config.dex.base_url:
+        config.dex.base_url = "https://api.dexscreener.com"
 
     return config
 

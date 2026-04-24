@@ -40,6 +40,23 @@ market:
   # 重试间隔（秒）
   retry_delay: 2
 
+# DEX 聚合数据源配置，当前实现支持 DexScreener
+dex:
+  enabled: true
+  base_url: "${DEXSCREENER_BASE_URL}"
+  chain_id: "solana"
+  # 示例：填入代币合约地址后，系统会用 DexScreener 补充 DEX 价格/流动性/市值
+  token_addresses: {}
+  timeout: 8
+  max_retries: 2
+  retry_delay: 2
+
+# 量化分析配置
+quant:
+  enabled: true
+  history_hours: 72
+  min_score_to_alert: 70
+
 # AI服务配置
 ai:
   provider: gemini
@@ -74,8 +91,17 @@ notification:
   rate_limit:
     # 每分钟最大通知数
     max_per_minute: 5
-    # 相同币种最小间隔（秒）
-    min_interval: 60
+    # 相同币种最小间隔（秒），PRD 建议 10 分钟防刷屏
+    min_interval: 600
+
+# 交易返佣与 Deep Link 配置，默认关闭
+affiliate:
+  enabled: false
+  referral_code: "${AFFILIATE_REFERRAL_CODE}"
+  # 示例: "https://t.me/YourTradeBot?start={symbol}-{referral_code}"
+  deep_link_template: "${AFFILIATE_DEEP_LINK_TEMPLATE}"
+  free_mode: false
+  mask_symbol: true
 
 # 存储配置
 storage:

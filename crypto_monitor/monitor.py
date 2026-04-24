@@ -14,6 +14,7 @@ from market import close_fetcher, get_fetcher
 from models import PriceState
 from notifier import close_notifier, get_notifier
 from onchain import normalize_onchain_payload
+from quant_engine import QuantEngine
 from reporting import ReportService
 from rules import RuleEngine
 from storage import close_storage, get_storage
@@ -30,6 +31,7 @@ class MonitorEngine:
         self.ai_service = get_ai_service()
         self.notifier = get_notifier()
         self.rule_engine = RuleEngine(self.config.rules)
+        self.quant_engine = QuantEngine()
         self.storage = None
         self.report_service: Optional[ReportService] = None
 
@@ -134,6 +136,19 @@ class MonitorEngine:
 
             state = self.price_states.setdefault(symbol, PriceState(symbol=symbol))
             change = state.update_price(snapshot.price)
+            quant_signal = None
+            if self.config.quant.enabled and self.storage:
+                history = await self.storage.get_price_history(
+                    symbol,
+                    hours=self.config.quant.history_hours,
+                    limit=120,
+                )
+                quant_signal = self.quant_engine.evaluate(
+                    symbol=symbol,
+                    current_price=snapshot.price,
+                    history=history,
+                    current_volume=snapshot.volume_24h,
+                )
 
             result = {
                 "symbol": symbol,
@@ -144,6 +159,7 @@ class MonitorEngine:
                 "should_alert": False,
                 "alert_level": None,
                 "snapshot": snapshot,
+                "quant_signal": quant_signal,
             }
 
             decision = self.rule_engine.evaluate_market(
@@ -151,6 +167,7 @@ class MonitorEngine:
                 change_percent=change,
                 thresholds=self.config.monitor.thresholds,
                 config=self.config.monitor,
+                quant_signal=quant_signal,
             )
             result["alert_level"] = decision.level
             result["rule_reasons"] = decision.reasons
@@ -160,7 +177,7 @@ class MonitorEngine:
             if decision.should_alert and state.can_alert(self.config.monitor.cooldown):
                 result["should_alert"] = True
 
-            price_records.append((symbol, snapshot.price, change))
+            price_records.append((symbol, snapshot.price, change, snapshot.volume_24h))
             await self._trigger_callbacks(self._on_price_update_callbacks, result)
             results[symbol] = result
 
@@ -178,8 +195,12 @@ class MonitorEngine:
         rule_reasons = result.get("rule_reasons") or []
         rule_tags = result.get("rule_tags") or []
         matched_rules = result.get("matched_rules") or []
+        quant_signal = result.get("quant_signal")
 
         _, style = self.config.monitor.thresholds.get_level(change)
+        ai_context = {"rule_reasons": rule_reasons, "rule_tags": rule_tags}
+        if quant_signal:
+            ai_context.update(quant_signal.as_context())
         insight = await self.ai_service.generate_insight(
             symbol=symbol,
             price=price,
@@ -187,11 +208,18 @@ class MonitorEngine:
             level=level,
             style=style,
             snapshot=snapshot,
-            context={"rule_reasons": rule_reasons, "rule_tags": rule_tags},
+            context=ai_context,
         )
 
         target_id = f"price:{symbol}:{datetime.now().isoformat(timespec='seconds')}"
-        success = await self.notifier.send_alert(symbol, price, change, level, insight.comment)
+        success = await self.notifier.send_alert(
+            symbol,
+            price,
+            change,
+            level,
+            insight.comment,
+            quant_signal=quant_signal,
+        )
         if self.storage:
             await self.storage.save_notification_delivery(
                 event_kind="price_alert",
@@ -200,7 +228,11 @@ class MonitorEngine:
                 target=symbol,
                 status="sent" if success else "failed",
                 error=None if success else "telegram send failed",
-                metadata={"level": level, "change": change},
+                metadata={
+                    "level": level,
+                    "change": change,
+                    "quant_signal": quant_signal.signal if quant_signal else None,
+                },
             )
         if not success:
             return False
@@ -220,6 +252,7 @@ class MonitorEngine:
                 rule_reasons=rule_reasons,
                 rule_tags=rule_tags,
                 matched_rules=matched_rules,
+                quant_signal=quant_signal,
             )
             await self.storage.update_symbol_state(symbol, price, datetime.now())
 
@@ -239,6 +272,7 @@ class MonitorEngine:
                 "rule_reasons": rule_reasons,
                 "rule_tags": rule_tags,
                 "matched_rules": matched_rules,
+                "quant_signal": quant_signal.as_context() if quant_signal else None,
                 "sent_at": datetime.now().isoformat(),
             },
         )

@@ -27,6 +27,28 @@ class MarketDataFetcherTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.price_change_percent_24h, 3.1)
         self.assertAlmostEqual(snapshot.volume_24h, 9999999.5)
 
+    def test_normalize_dex_pair(self):
+        fetcher = MarketDataFetcher()
+        snapshot = fetcher._normalize_dex_pair(
+            {
+                "baseToken": {"symbol": "SOL"},
+                "quoteToken": {"symbol": "USDC"},
+                "priceUsd": "150.5",
+                "volume": {"h24": 123456.7},
+                "priceChange": {"h24": "4.5"},
+                "liquidity": {"usd": 98765.4},
+                "marketCap": 123000000,
+            }
+        )
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.pair, "SOLUSDT")
+        self.assertEqual(snapshot.provider, "dexscreener")
+        self.assertAlmostEqual(snapshot.price, 150.5)
+        self.assertAlmostEqual(snapshot.liquidity_usd, 98765.4)
+        self.assertAlmostEqual(snapshot.market_cap, 123000000)
+
 
 if __name__ == "__main__":
     unittest.main()

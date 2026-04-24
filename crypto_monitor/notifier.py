@@ -14,6 +14,7 @@ import aiohttp
 
 from config import get_config
 from logger import get_notifier_logger
+from models import QuantSignal
 
 
 class RateLimiter:
@@ -141,6 +142,7 @@ class TelegramNotifier:
         change_percent: float,
         level: str,
         ai_comment: str,
+        quant_signal: Optional[QuantSignal] = None,
     ) -> bool:
         if not self.rate_limiter.can_send(symbol):
             wait_time = self.rate_limiter.get_wait_time(symbol)
@@ -149,13 +151,21 @@ class TelegramNotifier:
 
         direction = "📈" if change_percent > 0 else "📉"
         level_emoji = {"minor": "🔔", "moderate": "⚠️", "major": "🚨"}.get(level, "🔔")
-        message = f"""{level_emoji} **{symbol} 异动警报**
+        display_symbol = self._display_symbol(symbol)
+        quant_text = self._format_quant_signal(quant_signal)
+        deep_link = self._build_deep_link(symbol)
+        link_text = f"\n🔗 一键查看: {deep_link}\n" if deep_link else ""
+        message = f"""{level_emoji} **{display_symbol} 异动警报**
 
 {direction} 现价: ${price:,.4f}
 📊 波动: {change_percent:+.2f}%
 🎯 级别: {level.upper()}
+📌 标的: {display_symbol}
+{quant_text}
 
 💭 {ai_comment}
+{link_text}
+⚠️ 仅供监控参考，不构成投资建议。
 
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
@@ -164,6 +174,33 @@ class TelegramNotifier:
         if success:
             self.rate_limiter.record_send(symbol)
         return success
+
+    def _display_symbol(self, symbol: str) -> str:
+        affiliate = get_config().affiliate
+        if not affiliate.enabled or not affiliate.free_mode or not affiliate.mask_symbol:
+            return symbol
+        if len(symbol) <= 2:
+            return f"{symbol[0]}*"
+        return f"{symbol[0]}{'*' * max(1, len(symbol) - 2)}{symbol[-1]}"
+
+    def _build_deep_link(self, symbol: str) -> str:
+        affiliate = get_config().affiliate
+        if not affiliate.enabled or not affiliate.deep_link_template:
+            return ""
+        return affiliate.deep_link_template.format(
+            symbol=symbol,
+            referral_code=affiliate.referral_code,
+        )
+
+    @staticmethod
+    def _format_quant_signal(signal: Optional[QuantSignal]) -> str:
+        if signal is None:
+            return ""
+        reasons = "; ".join(signal.reasons[:3]) if signal.reasons else "insufficient signal reasons"
+        return (
+            f"🧮 量化信号: {signal.signal} ({signal.score:+.0f})\n"
+            f"📎 依据: {reasons}"
+        )
 
     async def send_onchain_alert(
         self,
@@ -250,8 +287,16 @@ class Notifier:
         change_percent: float,
         level: str,
         ai_comment: str,
+        quant_signal: Optional[QuantSignal] = None,
     ) -> bool:
-        return await self.telegram.send_alert(symbol, price, change_percent, level, ai_comment)
+        return await self.telegram.send_alert(
+            symbol,
+            price,
+            change_percent,
+            level,
+            ai_comment,
+            quant_signal=quant_signal,
+        )
 
     async def send_daily_summary(self, summary: Dict) -> bool:
         return await self.telegram.send_daily_summary(summary)

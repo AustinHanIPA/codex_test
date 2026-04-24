@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 from config import MonitorConfig, OnchainConfig, RulesConfig, ThresholdConfig
-from models import MarketSnapshot, OnchainEvent
+from models import MarketSnapshot, OnchainEvent, QuantSignal
 
 
 @dataclass
@@ -35,6 +35,7 @@ class RuleEngine:
         change_percent: float,
         thresholds: ThresholdConfig,
         config: MonitorConfig,
+        quant_signal: Optional[QuantSignal] = None,
     ) -> RuleDecision:
         reasons: List[str] = []
 
@@ -54,10 +55,20 @@ class RuleEngine:
                 )
             reasons.append("24h volume rule satisfied")
 
-        configured = self._evaluate_market_rules(snapshot, change_percent)
+        configured = self._evaluate_market_rules(snapshot, change_percent, quant_signal)
         if configured is not None:
             configured.reasons = reasons + configured.reasons
             return configured
+
+        if quant_signal and abs(quant_signal.score) >= 70:
+            level = "major" if abs(quant_signal.score) >= 85 else "moderate"
+            return RuleDecision(
+                should_alert=True,
+                level=level,
+                reasons=reasons + [f"quant signal {quant_signal.signal} score {quant_signal.score:.2f}"],
+                tags=["quant-signal"],
+                matched_rules=["builtin-quant-signal"],
+            )
 
         abs_change = abs(change_percent)
         level: Optional[str] = None
@@ -119,6 +130,7 @@ class RuleEngine:
         self,
         snapshot: MarketSnapshot,
         change_percent: float,
+        quant_signal: Optional[QuantSignal],
     ) -> Optional[RuleDecision]:
         if not self.rules_config.enabled or not self.rules_config.market:
             return None
@@ -128,7 +140,7 @@ class RuleEngine:
             if not self._is_rule_enabled(rule):
                 continue
             conditions = self._rule_conditions(rule)
-            if conditions and self._all_market_conditions(conditions, snapshot, change_percent):
+            if conditions and self._all_market_conditions(conditions, snapshot, change_percent, quant_signal):
                 matches.append(rule)
 
         if not matches:
@@ -184,14 +196,19 @@ class RuleEngine:
         conditions: List[Dict[str, Any]],
         snapshot: MarketSnapshot,
         change_percent: float,
+        quant_signal: Optional[QuantSignal],
     ) -> bool:
-        return all(self._match_market_condition(condition, snapshot, change_percent) for condition in conditions)
+        return all(
+            self._match_market_condition(condition, snapshot, change_percent, quant_signal)
+            for condition in conditions
+        )
 
     def _match_market_condition(
         self,
         condition: Dict[str, Any],
         snapshot: MarketSnapshot,
         change_percent: float,
+        quant_signal: Optional[QuantSignal],
     ) -> bool:
         for key, expected in condition.items():
             if key == "price_change_abs_gte":
@@ -214,6 +231,18 @@ class RuleEngine:
                     return False
             elif key == "symbol_in":
                 if snapshot.symbol.upper() not in self._upper_set(expected):
+                    return False
+            elif key == "quant_signal_in":
+                if not quant_signal or quant_signal.signal not in {str(item) for item in self._list(expected)}:
+                    return False
+            elif key == "quant_score_abs_gte":
+                if not quant_signal or abs(quant_signal.score) < float(expected):
+                    return False
+            elif key == "quant_score_gte":
+                if not quant_signal or quant_signal.score < float(expected):
+                    return False
+            elif key == "quant_score_lte":
+                if not quant_signal or quant_signal.score > float(expected):
                     return False
             else:
                 return False

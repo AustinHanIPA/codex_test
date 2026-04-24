@@ -13,10 +13,10 @@ import aiosqlite
 
 from config import get_config
 from logger import get_storage_logger
-from models import AIInsight, OnchainEvent
+from models import AIInsight, OnchainEvent, QuantSignal
 
 
-PriceRecord = Tuple[str, float, Optional[float]]
+PriceRecord = Tuple[str, float, Optional[float], Optional[float]]
 
 
 class Storage:
@@ -54,11 +54,13 @@ class Storage:
                 symbol TEXT NOT NULL,
                 price REAL NOT NULL,
                 change_percent REAL,
+                volume_24h REAL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        await self._ensure_price_history_columns()
 
         await self.db.execute(
             """
@@ -77,6 +79,9 @@ class Storage:
                 rule_reasons TEXT,
                 rule_tags TEXT,
                 matched_rules TEXT,
+                quant_signal TEXT,
+                quant_score REAL DEFAULT 0,
+                quant_reasons TEXT,
                 telegram_message_id INTEGER,
                 sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -234,10 +239,24 @@ class Storage:
             "rule_reasons": "TEXT",
             "rule_tags": "TEXT",
             "matched_rules": "TEXT",
+            "quant_signal": "TEXT",
+            "quant_score": "REAL DEFAULT 0",
+            "quant_reasons": "TEXT",
         }
         for name, column_type in columns.items():
             if name not in existing:
                 await self.db.execute(f"ALTER TABLE alerts ADD COLUMN {name} {column_type}")
+
+    async def _ensure_price_history_columns(self) -> None:
+        async with self.db.execute("PRAGMA table_info(price_history)") as cursor:
+            rows = await cursor.fetchall()
+        existing = {row[1] for row in rows}
+        columns = {
+            "volume_24h": "REAL",
+        }
+        for name, column_type in columns.items():
+            if name not in existing:
+                await self.db.execute(f"ALTER TABLE price_history ADD COLUMN {name} {column_type}")
 
     async def _ensure_onchain_event_columns(self) -> None:
         async with self.db.execute("PRAGMA table_info(onchain_events)") as cursor:
@@ -255,19 +274,30 @@ class Storage:
         symbol: str,
         price: float,
         change_percent: Optional[float] = None,
+        volume_24h: Optional[float] = None,
     ) -> None:
-        await self.save_prices([(symbol, price, change_percent)])
+        await self.save_prices([(symbol, price, change_percent, volume_24h)])
 
     async def save_prices(self, records: Sequence[PriceRecord]) -> None:
         if not records:
             return
 
+        normalized = [
+            (
+                record[0],
+                record[1],
+                record[2] if len(record) > 2 else None,
+                record[3] if len(record) > 3 else None,
+            )
+            for record in records
+        ]
+
         await self.db.executemany(
             """
-            INSERT INTO price_history (symbol, price, change_percent)
-            VALUES (?, ?, ?)
+            INSERT INTO price_history (symbol, price, change_percent, volume_24h)
+            VALUES (?, ?, ?, ?)
             """,
-            records,
+            normalized,
         )
         await self.db.commit()
 
@@ -283,6 +313,7 @@ class Storage:
         rule_reasons: Optional[Sequence[str]] = None,
         rule_tags: Optional[Sequence[str]] = None,
         matched_rules: Optional[Sequence[str]] = None,
+        quant_signal: Optional[QuantSignal] = None,
     ) -> None:
         comment = ai_comment or (insight.comment if insight else None)
         await self.db.execute(
@@ -291,9 +322,10 @@ class Storage:
             (
                 symbol, price, change_percent, alert_level, ai_comment,
                 sentiment, event_type, risk_hint, suggested_action, confidence,
-                rule_reasons, rule_tags, matched_rules, telegram_message_id
+                rule_reasons, rule_tags, matched_rules,
+                quant_signal, quant_score, quant_reasons, telegram_message_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -309,6 +341,9 @@ class Storage:
                 json.dumps(list(rule_reasons or []), ensure_ascii=False),
                 json.dumps(list(rule_tags or []), ensure_ascii=False),
                 json.dumps(list(matched_rules or []), ensure_ascii=False),
+                quant_signal.signal if quant_signal else None,
+                quant_signal.score if quant_signal else 0.0,
+                json.dumps(quant_signal.reasons if quant_signal else [], ensure_ascii=False),
                 telegram_message_id,
             ),
         )
@@ -510,7 +545,7 @@ class Storage:
         since = datetime.now() - timedelta(hours=hours)
         async with self.db.execute(
             """
-            SELECT price, change_percent, timestamp
+            SELECT price, change_percent, volume_24h, timestamp
             FROM price_history
             WHERE symbol = ? AND timestamp >= ?
             ORDER BY timestamp DESC
@@ -520,7 +555,12 @@ class Storage:
         ) as cursor:
             rows = await cursor.fetchall()
         return [
-            {"price": row[0], "change_percent": row[1], "timestamp": row[2]}
+            {
+                "price": row[0],
+                "change_percent": row[1],
+                "volume_24h": row[2],
+                "timestamp": row[3],
+            }
             for row in rows
         ]
 
@@ -536,7 +576,8 @@ class Storage:
             query = """
                 SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at,
                        sentiment, event_type, risk_hint, suggested_action, confidence,
-                       rule_reasons, rule_tags, matched_rules
+                       rule_reasons, rule_tags, matched_rules,
+                       quant_signal, quant_score, quant_reasons
                 FROM alerts
                 WHERE symbol = ? AND sent_at >= ?
                 ORDER BY sent_at DESC
@@ -547,7 +588,8 @@ class Storage:
             query = """
                 SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at,
                        sentiment, event_type, risk_hint, suggested_action, confidence,
-                       rule_reasons, rule_tags, matched_rules
+                       rule_reasons, rule_tags, matched_rules,
+                       quant_signal, quant_score, quant_reasons
                 FROM alerts
                 WHERE sent_at >= ?
                 ORDER BY sent_at DESC
@@ -573,6 +615,9 @@ class Storage:
                 "rule_reasons": self._loads_json_list(row[11]),
                 "rule_tags": self._loads_json_list(row[12]),
                 "matched_rules": self._loads_json_list(row[13]),
+                "quant_signal": row[14],
+                "quant_score": row[15],
+                "quant_reasons": self._loads_json_list(row[16]),
             }
             for row in rows
         ]

@@ -41,6 +41,35 @@ class AIInsight:
 
 
 @dataclass
+class QuantSignal:
+    """量化分析输出。"""
+
+    symbol: str
+    signal: str = "NEUTRAL"
+    score: float = 0.0
+    rsi: Optional[float] = None
+    bollinger_position: Optional[float] = None
+    macd: Optional[float] = None
+    macd_signal: Optional[float] = None
+    volume_spike: Optional[float] = None
+    reasons: List[str] = field(default_factory=list)
+
+    def as_context(self) -> Dict[str, Any]:
+        return {
+            "quant_signal": self.signal,
+            "quant_score": round(self.score, 2),
+            "rsi": round(self.rsi, 2) if self.rsi is not None else None,
+            "bollinger_position": (
+                round(self.bollinger_position, 3) if self.bollinger_position is not None else None
+            ),
+            "macd": round(self.macd, 6) if self.macd is not None else None,
+            "macd_signal": round(self.macd_signal, 6) if self.macd_signal is not None else None,
+            "volume_spike": round(self.volume_spike, 2) if self.volume_spike is not None else None,
+            "quant_reasons": self.reasons,
+        }
+
+
+@dataclass
 class OnchainEvent:
     """链上事件。"""
 
