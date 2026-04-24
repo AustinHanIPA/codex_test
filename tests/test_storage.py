@@ -5,7 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "crypto_monitor"))
 
+from config import get_config
 from storage import Storage
+from models import AIInsight, OnchainEvent
+from reporting import ReportService
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):
@@ -39,6 +42,55 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
 
         stats = await self.storage.get_statistics()
         self.assertEqual(stats["total_prices"], 2)
+
+    async def test_save_onchain_event_updates_statistics(self):
+        event = OnchainEvent(
+            event_id="tx-1",
+            source="test",
+            event_type="WhaleTransfer",
+            symbol="SOL",
+            amount_usd=125000.0,
+            address="wallet-a",
+        )
+        insight = AIInsight(
+            comment="🚨 巨鲸转账",
+            sentiment="neutral",
+            event_type="WhaleTransfer",
+            confidence=0.9,
+        )
+
+        await self.storage.save_onchain_event(
+            event,
+            rule_level="major",
+            rule_reasons=["whale transfer >= 50000.00 USD"],
+            rule_tags=["whale-transfer"],
+            insight=insight,
+        )
+
+        stats = await self.storage.get_statistics()
+        self.assertEqual(stats["total_onchain_events"], 1)
+
+        events = await self.storage.get_onchain_events(hours=24)
+        self.assertEqual(events[0]["event_id"], "tx-1")
+        self.assertEqual(events[0]["rule_tags"], ["whale-transfer"])
+
+    async def test_daily_report_generation(self):
+        get_config().reporting.output_dir = str(Path(self.temp_dir.name) / "reports")
+        await self.storage.save_alert(
+            "BTC",
+            65000.0,
+            4.2,
+            "major",
+            insight=AIInsight(comment="🚀 放量突破", sentiment="bullish", confidence=0.8),
+            rule_reasons=["price change +4.20% >= major threshold"],
+            rule_tags=["momentum"],
+        )
+
+        report = await ReportService(self.storage).generate_daily_report(lookback_hours=24)
+
+        self.assertEqual(report["alerts_count"], 1)
+        self.assertIn("BTC", report["content"])
+        self.assertTrue(Path(report["file_path"]).exists())
 
 
 if __name__ == "__main__":

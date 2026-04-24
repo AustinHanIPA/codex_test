@@ -1,70 +1,176 @@
 # api-doc-inspect 架构分析与 aiCode 优化方向
 
-## 结论
+更新时间：2026-04-24
 
-`api-doc-inspect` 最大的价值不在“抓文档”本身，而在它把一条 AI 工作流拆成了稳定的几层：
+## 1. 结论
 
-1. 配置与入口解耦：抓取、分析、报告生成各自独立，可单跑、可串联。
-2. 数据产物结构化：输入缓存、LLM 结果、HTML 报告都能落盘，便于排障和复用。
-3. 解析有兜底：不是盲信模型输出，而是通过自定义 parser 兜底非标准返回。
-4. 本地缓存优先：原始数据和分析结果分目录存储，能支持增量执行和失败恢复。
-5. 面向“结果消费”设计：不是停在脚本执行完成，而是继续生成可读报告。
+`api-doc-inspect` 对 `aiCode/crypto_monitor` 最有价值的启发，不是某个具体工具，而是它的工作流形态：
 
-这些优点很适合迁移到 `aiCode/crypto_monitor`。
+1. 输入、分析、输出分层清晰。
+2. 中间产物结构化。
+3. 模型输出不可信时有解析兜底。
+4. 结果可落盘、可复查、可继续消费。
+5. 最终输出面向人阅读，而不是只停在脚本日志。
 
-## 对 aiCode 的启发
+这些原则已经逐步迁移到当前项目。
 
-当前 `crypto_monitor` 已有配置、抓取、AI、通知、存储几个模块，但之前存在几个典型问题：
+## 2. 对当前项目的启发
 
-1. 模块边界有了，异步契约没统一，主入口与实现脱节。
-2. 数据流以“临时字典 + 字符串”为主，缺少结构化领域模型。
-3. 监控状态恢复、健康检查、自恢复逻辑不完整。
-4. AI 输出只拿一段文本，没有像 `api-doc-inspect` 一样做结构化和兜底解析。
+当前 `crypto_monitor` 已经不是单一脚本，而是一个结构化监控服务：
 
-基于这些观察，这次优化把 `api-doc-inspect` 的几个优点落成了下面这些方向：
+- 市场输入：`market.py`
+- 链上输入：`onchain.py`
+- 领域模型：`models.py`
+- 规则判断：`rules.py`
+- AI 分析：`ai_service.py`
+- 通知输出：`notifier.py`
+- 数据落盘：`storage.py`
+- 报告输出：`reporting.py`
+- 编排中心：`monitor.py`
+- 服务入口：`main.py`
 
-1. 引入领域模型：新增 `models.py`，统一市场快照、AI 洞察、价格状态。
-2. 统一异步链路：`market.py`、`ai_service.py`、`monitor.py` 都按异步方式协同。
-3. AI 输出结构化：借鉴 `custom_parser.py` 的思路，让 Gemini 优先返回 JSON，失败时再降级解析文本。
-4. 状态持久化恢复：监控器启动时从 SQLite 恢复价格状态和告警冷却时间。
-5. 自恢复机制：连续失败达到阈值后，自动重建市场抓取会话。
+这与 `api-doc-inspect` 的启发高度一致：每一步都产生稳定对象，后续模块消费对象，而不是互相传递不可控字符串。
 
-## 本次已落地的开发点
+## 3. 已落地能力
 
-围绕需求文档《Gemini Pro_ Advanced AI Capabilities - Google Gemini》，本次已完成：
+### 3.1 结构化领域模型
 
-1. `market.py`
-   - 改成基于 `aiohttp` 的单例长连接抓取器。
-   - 统一返回 `MarketSnapshot`，为后续补充市值/成交量留出结构位。
+已通过 `models.py` 抽象：
 
-2. `ai_service.py`
-   - 增加 `AIInsight` 结构化返回。
-   - 提示词支持从配置模板渲染，包含币种、价格、波动、级别、风格、市值占位。
-   - 增加 JSON 解析与文本兜底，提升 Gemini 返回不稳定时的可用性。
+- `MarketSnapshot`
+- `OnchainEvent`
+- `AIInsight`
+- `PriceState`
 
-3. `monitor.py`
-   - 重建 `MonitorEngine`，补齐初始化、单次运行、持续运行、状态恢复、健康检查、清理资源。
-   - 增加 `PriceState` 冷却控制与趋势判断。
-   - 打通抓取 -> 判断 -> AI 洞察 -> 通知 -> 存储 的完整链路。
+价值：
 
-4. `main.py`
-   - 修正主入口对异步抓取和异步 AI 调用的使用方式，保证 CLI 能正常驱动核心链路。
+- 市场、链上、AI、状态不再混在临时字典里。
+- 后续接 DEX、钱包、社交数据时有稳定扩展点。
 
-## 后续建议
+### 3.2 模型输出结构化和兜底
 
-如果继续沿着 `api-doc-inspect` 的优点做下一轮迭代，建议优先级如下：
+`ai_service.py` 已支持：
 
-1. 生成日报/巡检报告
-   - 把当日告警、币种波动和 AI 洞察整理成 Markdown/HTML 报告。
+- 要求 Gemini 输出 JSON。
+- 解析 `comment/sentiment/event_type/risk_hint/suggested_action/confidence`。
+- 支持 fenced JSON。
+- 非 JSON 时取首行文本兜底。
+- AI 未配置或失败时返回默认 `AIInsight`。
 
-2. 结果缓存与增量分析
-   - 为 AI 洞察增加缓存键，避免短时间内对同一币种重复请求模型。
+这对应 `api-doc-inspect` 的 parser 思路：模型输出可以增强系统，但不能成为系统稳定性的单点。
 
-3. 多数据源抽象
-   - 像 `api-doc-inspect` 区分“获取”和“分析”一样，把交易所行情、链上数据、社媒情绪拆成独立 provider。
+### 3.3 数据源归一化
 
-4. 报警策略规则化
-   - 把阈值、冷却、风格映射升级成可配置规则，减少硬编码。
+`market.py` 已将市场数据归一化为 `MarketSnapshot`。
 
-5. 可读报告层
-   - 增加一个 `reporting` 模块，把系统从“机器人”提升为“可复盘的监控产品”。
+`onchain.py` 已将 Helius/QuickNode 常见 webhook payload 归一化为 `OnchainEvent`：
+
+- 支持单条和批量。
+- 支持 `tokenTransfers`。
+- 支持 `data/events/transactions` 包装。
+- 支持事件别名映射。
+
+### 3.4 规则引擎
+
+`rules.py` 已提供 `RuleEngine`：
+
+- 价格阈值判断。
+- 市值和成交额过滤。
+- 巨鲸转账判断。
+- 追踪地址判断。
+- 输出 `RuleDecision`。
+
+这让告警判断从 `if/else` 变成可继续扩展的独立层。
+
+### 3.5 报告层
+
+`reporting.py` 已生成 Markdown 日报：
+
+- 汇总市场告警。
+- 汇总链上事件。
+- 支持 `major_only` 过滤。
+- 保存到本地 `reports/`。
+- 保存到 SQLite。
+- 可通过 Telegram 推送。
+
+这一步把项目从“只发实时消息”推进到“可复盘的监控产品”。
+
+## 4. 当前代码链路
+
+```text
+Market / Webhook Payload
+        |
+        v
+Normalization
+        |
+        v
+MarketSnapshot / OnchainEvent
+        |
+        v
+RuleEngine
+        |
+        v
+AIInsight
+        |
+        v
+Telegram + SQLite + Markdown Report
+```
+
+## 5. 与 api-doc-inspect 的对应关系
+
+| api-doc-inspect 思路 | crypto_monitor 当前实现 |
+| --- | --- |
+| 文档抓取 | `market.py` / `onchain.py` |
+| 结构化分析 | `rules.py` / `ai_service.py` |
+| 解析兜底 | `_parse_insight()` |
+| 中间产物落盘 | `storage.py` |
+| 人类可读报告 | `reporting.py` |
+| 可单跑入口 | CLI / HTTP 接口 |
+
+## 6. 后续优化方向
+
+### 6.1 结果缓存
+
+为 AI 洞察增加缓存键：
+
+- `symbol`
+- `event_type`
+- `rule_level`
+- `event_id`
+- 时间窗口
+
+目标是减少重复调用模型，降低成本和延迟。
+
+### 6.2 事件幂等
+
+在处理 webhook 前检查 `event_id` 是否已经存在，避免 provider 重试造成重复告警。
+
+### 6.3 报告增强
+
+将当前 Markdown 日报扩展为：
+
+- Telegram 精简版。
+- Notion 完整版。
+- HTML 归档版。
+
+### 6.4 规则配置化
+
+把当前 `RuleEngine` 中的代码规则迁移到配置：
+
+- 阈值。
+- AND/OR 条件。
+- watchlist 级规则。
+- token 级规则。
+
+### 6.5 多数据源 provider
+
+继续按 `onchain.py` 的思路扩展：
+
+- Helius provider。
+- QuickNode provider。
+- DEX Screener provider。
+- Birdeye WebSocket provider。
+
+## 7. 最终判断
+
+`api-doc-inspect` 的核心价值已经被迁移成当前项目的几个关键方向：结构化、兜底解析、可落盘、可复盘、可扩展。下一轮最值得投入的是事件幂等、provider 级安全校验、AI 缓存和规则配置化。

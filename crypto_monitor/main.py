@@ -103,7 +103,7 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
             {
                 "name": "crypto-monitor",
                 "status": "ok" if engine.failure_count < config.health_check.max_failures else "degraded",
-                "endpoints": ["/", "/health", "/status"],
+                "endpoints": ["/", "/health", "/status", "/webhooks/onchain", "/reports/daily"],
             }
         )
 
@@ -120,11 +120,36 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
     async def status(_request: web.Request) -> web.Response:
         return web.json_response(engine.get_status())
 
+    async def onchain_webhook(request: web.Request) -> web.Response:
+        token = config.onchain.webhook_auth_token
+        if token:
+            provided = request.headers.get("X-Webhook-Token") or request.query.get("token")
+            if provided != token:
+                return web.json_response({"error": "unauthorized"}, status=401)
+
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "invalid json"}, status=400)
+
+        source = request.query.get("source", "webhook")
+        result = await engine.process_onchain_payload(payload, source=source)
+        return web.json_response(result)
+
+    async def daily_report(request: web.Request) -> web.Response:
+        raw_hours = request.query.get("hours")
+        lookback_hours = int(raw_hours) if raw_hours and raw_hours.isdigit() else None
+        send = request.query.get("send", "").lower() in {"1", "true", "yes"}
+        result = await engine.generate_daily_report(lookback_hours=lookback_hours, send=send)
+        return web.json_response(result)
+
     app = web.Application()
     app.add_routes([
         web.get("/", index),
         web.get("/health", health),
         web.get("/status", status),
+        web.post("/webhooks/onchain", onchain_webhook),
+        web.post("/reports/daily", daily_report),
     ])
 
     runner = web.AppRunner(app)

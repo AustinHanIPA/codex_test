@@ -165,6 +165,38 @@ class TelegramNotifier:
             self.rate_limiter.record_send(symbol)
         return success
 
+    async def send_onchain_alert(
+        self,
+        symbol: str,
+        event_type: str,
+        amount_usd: Optional[float],
+        level: str,
+        ai_comment: str,
+    ) -> bool:
+        target = f"onchain:{symbol or event_type}"
+        if not self.rate_limiter.can_send(target):
+            wait_time = self.rate_limiter.get_wait_time(target)
+            self.logger.warning(f"链上通知限流中，{target} 需等待 {wait_time:.1f} 秒")
+            return False
+
+        level_emoji = {"minor": "🔔", "moderate": "⚠️", "major": "🚨"}.get(level, "🔔")
+        amount_text = f"${amount_usd:,.2f}" if amount_usd is not None else "未知"
+        message = f"""{level_emoji} **链上事件警报**
+
+事件: {event_type}
+代币: {symbol or '未知'}
+金额: {amount_text}
+级别: {level.upper()}
+
+💭 {ai_comment}
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        success = await self.send_message(message, parse_mode="Markdown")
+        if success:
+            self.rate_limiter.record_send(target)
+        return success
+
     async def send_daily_summary(self, summary: Dict) -> bool:
         message = f"""📊 **每日行情汇总**
 
@@ -178,6 +210,13 @@ class TelegramNotifier:
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         return await self.send_message(message, parse_mode="Markdown")
+
+    async def send_report(self, report: Dict) -> bool:
+        content = str(report.get("content") or "")
+        max_len = 3500
+        if len(content) > max_len:
+            content = content[:max_len] + "\n\n...报告内容已截断，请查看本地 Markdown 文件。"
+        return await self.send_message(content, parse_mode="Markdown")
 
     async def send_health_check(self, status: Dict) -> bool:
         status_emoji = "✅" if status.get("healthy", False) else "❌"
@@ -217,8 +256,27 @@ class Notifier:
     async def send_daily_summary(self, summary: Dict) -> bool:
         return await self.telegram.send_daily_summary(summary)
 
+    async def send_report(self, report: Dict) -> bool:
+        return await self.telegram.send_report(report)
+
     async def send_health_check(self, status: Dict) -> bool:
         return await self.telegram.send_health_check(status)
+
+    async def send_onchain_alert(
+        self,
+        symbol: str,
+        event_type: str,
+        amount_usd: Optional[float],
+        level: str,
+        ai_comment: str,
+    ) -> bool:
+        return await self.telegram.send_onchain_alert(
+            symbol=symbol,
+            event_type=event_type,
+            amount_usd=amount_usd,
+            level=level,
+            ai_comment=ai_comment,
+        )
 
     async def close(self) -> None:
         await self.telegram.close()

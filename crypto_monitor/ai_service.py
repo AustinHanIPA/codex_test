@@ -14,7 +14,7 @@ import aiohttp
 
 from config import get_config
 from logger import get_ai_logger
-from models import AIInsight, MarketSnapshot
+from models import AIInsight, MarketSnapshot, OnchainEvent
 
 
 class AIService:
@@ -39,6 +39,7 @@ class AIService:
         level: str,
         style: str,
         snapshot: Optional[MarketSnapshot],
+        context: Optional[Dict[str, Any]] = None,
     ) -> str:
         template_text = self.config.prompt_template.strip()
         template_text = template_text.replace("${change:.2f}", "${change}")
@@ -56,7 +57,38 @@ class AIService:
             "style": style,
             "market_cap": self._format_optional_number(snapshot.market_cap if snapshot else None),
         }
-        return Template(template_text).safe_substitute(payload)
+        rendered = Template(template_text).safe_substitute(payload)
+        context_text = self._format_context(context or {})
+        if context_text:
+            return f"{rendered}\n补充上下文：{context_text}"
+        return rendered
+
+    def _render_onchain_prompt(
+        self,
+        event: OnchainEvent,
+        level: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        context_text = self._format_context(context or {})
+        return (
+            "你是经验丰富的 Web3 风控分析师。请分析以下链上事件："
+            f"事件类型={event.event_type}，来源={event.source}，地址={event.address}，"
+            f"对手方={event.counterparty or '未知'}，代币={event.symbol or '未知'}，"
+            f"金额={event.amount or '未知'}，美元价值={event.amount_usd or '未知'}，"
+            f"方向={event.direction}，级别={level}。"
+            f"{' 补充上下文：' + context_text if context_text else ''}"
+        )
+
+    @staticmethod
+    def _format_context(context: Dict[str, Any]) -> str:
+        if not context:
+            return ""
+        parts = []
+        for key, value in context.items():
+            if value in (None, "", [], {}):
+                continue
+            parts.append(f"{key}={value}")
+        return "；".join(parts)
 
     @staticmethod
     def _format_optional_number(value: Optional[float]) -> str:
@@ -89,7 +121,10 @@ class AIService:
                 return AIInsight(
                     comment=str(data.get("comment") or data.get("text") or cleaned).strip(),
                     sentiment=str(data.get("sentiment") or "neutral").strip(),
+                    event_type=str(data.get("event_type") or "price_movement").strip(),
                     risk_hint=str(data.get("risk_hint") or "").strip(),
+                    suggested_action=str(data.get("suggested_action") or "").strip(),
+                    confidence=self._parse_confidence(data.get("confidence")),
                     raw_text=cleaned,
                 )
         except json.JSONDecodeError:
@@ -98,30 +133,31 @@ class AIService:
         first_line = cleaned.splitlines()[0].strip()
         return AIInsight(comment=first_line[:120], raw_text=cleaned)
 
-    async def generate_insight(
-        self,
-        symbol: str,
-        price: float,
-        change_percent: float,
-        level: str,
-        style: str,
-        snapshot: Optional[MarketSnapshot] = None,
-        session: Optional[aiohttp.ClientSession] = None,
-    ) -> AIInsight:
-        """请求结构化 AI 洞察。"""
-        if not self.url:
-            return AIInsight(comment="🤖 AI 未配置，已切换到默认点评。", sentiment="neutral")
+    @staticmethod
+    def _parse_confidence(value: Any) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(parsed, 1.0))
 
-        prompt = self._render_prompt(symbol, price, change_percent, level, style, snapshot)
+    def _build_payload(self, prompt: str) -> Dict[str, Any]:
         instruction = (
-            "请你只输出 JSON，结构为 "
-            '{"comment":"50字以内短评，带 Emoji","sentiment":"bullish/bearish/neutral","risk_hint":"一句风险提示"}。'
+            "请只输出 JSON，结构为 "
+            '{"comment":"50字以内短评，带 Emoji","sentiment":"bullish/bearish/neutral",'
+            '"event_type":"price_movement/onchain_whale/new_pair/liquidity_change/system",'
+            '"risk_hint":"一句风险提示","suggested_action":"一句操作建议","confidence":0.0}。'
         )
-        payload = {
+        return {
             "contents": [{"parts": [{"text": f"{prompt}\n{instruction}"}]}],
-            "generationConfig": {"temperature": 0.8, "maxOutputTokens": 160},
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 220},
         }
 
+    async def _request_insight(
+        self,
+        payload: Dict[str, Any],
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> AIInsight:
         owns_session = session is None
         if owns_session:
             timeout = aiohttp.ClientTimeout(total=self.config.timeout)
@@ -147,6 +183,45 @@ class AIService:
             if owns_session:
                 await session.close()
 
+    async def generate_insight(
+        self,
+        symbol: str,
+        price: float,
+        change_percent: float,
+        level: str,
+        style: str,
+        snapshot: Optional[MarketSnapshot] = None,
+        context: Optional[Dict[str, Any]] = None,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> AIInsight:
+        """请求结构化 AI 洞察。"""
+        if not self.url:
+            return AIInsight(comment="🤖 AI 未配置，已切换到默认点评。", sentiment="neutral")
+
+        prompt = self._render_prompt(symbol, price, change_percent, level, style, snapshot, context)
+        return await self._request_insight(self._build_payload(prompt), session=session)
+
+    async def generate_onchain_insight(
+        self,
+        event: OnchainEvent,
+        level: str,
+        context: Optional[Dict[str, Any]] = None,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> AIInsight:
+        """请求链上事件结构化洞察。"""
+        if not self.url:
+            return AIInsight(
+                comment="🤖 AI 未配置，链上事件已按规则告警。",
+                sentiment="neutral",
+                event_type=event.event_type or "onchain_whale",
+            )
+
+        prompt = self._render_onchain_prompt(event, level, context)
+        insight = await self._request_insight(self._build_payload(prompt), session=session)
+        if insight.event_type == "price_movement":
+            insight.event_type = event.event_type or "onchain_whale"
+        return insight
+
     async def generate_comment(
         self,
         symbol: str,
@@ -165,6 +240,7 @@ class AIService:
             level=level,
             style=style,
             snapshot=snapshot,
+            context=None,
             session=session,
         )
         return insight.comment

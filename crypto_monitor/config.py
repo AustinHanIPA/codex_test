@@ -147,9 +147,12 @@ class OnchainConfig:
 @dataclass
 class ReportingConfig:
     """报告层配置"""
+    enabled: bool = True
     output_dir: str = "./reports"
     default_lookback_hours: int = 24
     major_only: bool = True
+    auto_send: bool = False
+    daily_hour: int = 8
 
 
 @dataclass

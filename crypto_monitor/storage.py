@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -12,6 +13,7 @@ import aiosqlite
 
 from config import get_config
 from logger import get_storage_logger
+from models import AIInsight, OnchainEvent
 
 
 PriceRecord = Tuple[str, float, Optional[float]]
@@ -67,12 +69,21 @@ class Storage:
                 change_percent REAL NOT NULL,
                 alert_level TEXT NOT NULL,
                 ai_comment TEXT,
+                sentiment TEXT,
+                event_type TEXT DEFAULT 'price_movement',
+                risk_hint TEXT,
+                suggested_action TEXT,
+                confidence REAL DEFAULT 0,
+                rule_reasons TEXT,
+                rule_tags TEXT,
                 telegram_message_id INTEGER,
                 sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+
+        await self._ensure_alert_columns()
 
         await self.db.execute(
             """
@@ -89,6 +100,49 @@ class Storage:
             """
             CREATE TABLE IF NOT EXISTS watchlist_symbols (
                 symbol TEXT PRIMARY KEY,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        await self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onchain_events (
+                event_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                symbol TEXT,
+                address TEXT,
+                counterparty TEXT,
+                amount REAL,
+                amount_usd REAL,
+                direction TEXT,
+                tx_signature TEXT,
+                description TEXT,
+                rule_level TEXT,
+                rule_reasons TEXT,
+                rule_tags TEXT,
+                ai_comment TEXT,
+                sentiment TEXT,
+                risk_hint TEXT,
+                suggested_action TEXT,
+                confidence REAL DEFAULT 0,
+                observed_at DATETIME,
+                raw TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        await self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                lookback_hours INTEGER,
+                generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -118,9 +172,38 @@ class Storage:
             ON alerts(sent_at)
             """
         )
+        await self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_onchain_events_created_at
+            ON onchain_events(created_at)
+            """
+        )
+        await self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_onchain_events_symbol
+            ON onchain_events(symbol)
+            """
+        )
 
         await self.db.commit()
         self.logger.debug("数据表初始化完成")
+
+    async def _ensure_alert_columns(self) -> None:
+        async with self.db.execute("PRAGMA table_info(alerts)") as cursor:
+            rows = await cursor.fetchall()
+        existing = {row[1] for row in rows}
+        columns = {
+            "sentiment": "TEXT",
+            "event_type": "TEXT DEFAULT 'price_movement'",
+            "risk_hint": "TEXT",
+            "suggested_action": "TEXT",
+            "confidence": "REAL DEFAULT 0",
+            "rule_reasons": "TEXT",
+            "rule_tags": "TEXT",
+        }
+        for name, column_type in columns.items():
+            if name not in existing:
+                await self.db.execute(f"ALTER TABLE alerts ADD COLUMN {name} {column_type}")
 
     async def save_price(
         self,
@@ -151,17 +234,101 @@ class Storage:
         alert_level: str,
         ai_comment: Optional[str] = None,
         telegram_message_id: Optional[int] = None,
+        insight: Optional[AIInsight] = None,
+        rule_reasons: Optional[Sequence[str]] = None,
+        rule_tags: Optional[Sequence[str]] = None,
     ) -> None:
+        comment = ai_comment or (insight.comment if insight else None)
         await self.db.execute(
             """
             INSERT INTO alerts
-            (symbol, price, change_percent, alert_level, ai_comment, telegram_message_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (
+                symbol, price, change_percent, alert_level, ai_comment,
+                sentiment, event_type, risk_hint, suggested_action, confidence,
+                rule_reasons, rule_tags, telegram_message_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (symbol, price, change_percent, alert_level, ai_comment, telegram_message_id),
+            (
+                symbol,
+                price,
+                change_percent,
+                alert_level,
+                comment,
+                insight.sentiment if insight else None,
+                insight.event_type if insight else "price_movement",
+                insight.risk_hint if insight else None,
+                insight.suggested_action if insight else None,
+                insight.confidence if insight else 0.0,
+                json.dumps(list(rule_reasons or []), ensure_ascii=False),
+                json.dumps(list(rule_tags or []), ensure_ascii=False),
+                telegram_message_id,
+            ),
         )
         await self.db.commit()
         self.logger.info(f"保存报警记录: {symbol} {change_percent:+.2f}% [{alert_level}]")
+
+    async def save_onchain_event(
+        self,
+        event: OnchainEvent,
+        rule_level: Optional[str] = None,
+        rule_reasons: Optional[Sequence[str]] = None,
+        rule_tags: Optional[Sequence[str]] = None,
+        insight: Optional[AIInsight] = None,
+    ) -> None:
+        await self.db.execute(
+            """
+            INSERT OR REPLACE INTO onchain_events
+            (
+                event_id, source, event_type, symbol, address, counterparty,
+                amount, amount_usd, direction, tx_signature, description,
+                rule_level, rule_reasons, rule_tags, ai_comment, sentiment,
+                risk_hint, suggested_action, confidence, observed_at, raw
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.source,
+                event.event_type,
+                event.symbol,
+                event.address,
+                event.counterparty,
+                event.amount,
+                event.amount_usd,
+                event.direction,
+                event.tx_signature,
+                event.description,
+                rule_level,
+                json.dumps(list(rule_reasons or []), ensure_ascii=False),
+                json.dumps(list(rule_tags or []), ensure_ascii=False),
+                insight.comment if insight else None,
+                insight.sentiment if insight else None,
+                insight.risk_hint if insight else None,
+                insight.suggested_action if insight else None,
+                insight.confidence if insight else 0.0,
+                event.observed_at or datetime.now().isoformat(),
+                json.dumps(event.raw, ensure_ascii=False),
+            ),
+        )
+        await self.db.commit()
+
+    async def save_report(
+        self,
+        report_type: str,
+        title: str,
+        content: str,
+        lookback_hours: int,
+    ) -> int:
+        cursor = await self.db.execute(
+            """
+            INSERT INTO reports (report_type, title, content, lookback_hours)
+            VALUES (?, ?, ?, ?)
+            """,
+            (report_type, title, content, lookback_hours),
+        )
+        await self.db.commit()
+        return int(cursor.lastrowid)
 
     async def update_symbol_state(
         self,
@@ -280,7 +447,9 @@ class Storage:
 
         if symbol:
             query = """
-                SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at
+                SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at,
+                       sentiment, event_type, risk_hint, suggested_action, confidence,
+                       rule_reasons, rule_tags
                 FROM alerts
                 WHERE symbol = ? AND sent_at >= ?
                 ORDER BY sent_at DESC
@@ -289,7 +458,9 @@ class Storage:
             params = (symbol, since.isoformat(), limit)
         else:
             query = """
-                SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at
+                SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at,
+                       sentiment, event_type, risk_hint, suggested_action, confidence,
+                       rule_reasons, rule_tags
                 FROM alerts
                 WHERE sent_at >= ?
                 ORDER BY sent_at DESC
@@ -307,6 +478,61 @@ class Storage:
                 "alert_level": row[3],
                 "ai_comment": row[4],
                 "sent_at": row[5],
+                "sentiment": row[6],
+                "event_type": row[7],
+                "risk_hint": row[8],
+                "suggested_action": row[9],
+                "confidence": row[10],
+                "rule_reasons": self._loads_json_list(row[11]),
+                "rule_tags": self._loads_json_list(row[12]),
+            }
+            for row in rows
+        ]
+
+    async def get_onchain_events(
+        self,
+        hours: int = 24,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        since = datetime.now() - timedelta(hours=hours)
+        async with self.db.execute(
+            """
+            SELECT event_id, source, event_type, symbol, address, counterparty,
+                   amount, amount_usd, direction, tx_signature, description,
+                   rule_level, rule_reasons, rule_tags, ai_comment, sentiment,
+                   risk_hint, suggested_action, confidence, observed_at, created_at
+            FROM onchain_events
+            WHERE created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (since.isoformat(), limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "event_id": row[0],
+                "source": row[1],
+                "event_type": row[2],
+                "symbol": row[3],
+                "address": row[4],
+                "counterparty": row[5],
+                "amount": row[6],
+                "amount_usd": row[7],
+                "direction": row[8],
+                "tx_signature": row[9],
+                "description": row[10],
+                "rule_level": row[11],
+                "rule_reasons": self._loads_json_list(row[12]),
+                "rule_tags": self._loads_json_list(row[13]),
+                "ai_comment": row[14],
+                "sentiment": row[15],
+                "risk_hint": row[16],
+                "suggested_action": row[17],
+                "confidence": row[18],
+                "observed_at": row[19],
+                "created_at": row[20],
             }
             for row in rows
         ]
@@ -326,9 +552,16 @@ class Storage:
         )
         alert_deleted = result.rowcount
 
+        result = await self.db.execute(
+            "DELETE FROM onchain_events WHERE created_at < ?",
+            (cutoff.isoformat(),),
+        )
+        onchain_deleted = result.rowcount
+
         await self.db.commit()
         self.logger.info(
-            f"清理过期数据完成: 价格记录 {price_deleted} 条, 报警记录 {alert_deleted} 条"
+            f"清理过期数据完成: 价格记录 {price_deleted} 条, 报警记录 {alert_deleted} 条, "
+            f"链上事件 {onchain_deleted} 条"
         )
 
     async def get_statistics(self) -> Dict[str, Any]:
@@ -358,7 +591,27 @@ class Storage:
             row = await cursor.fetchone()
             stats["watchlist_symbols"] = row[0] if row else 0
 
+        async with self.db.execute("SELECT COUNT(*) FROM onchain_events") as cursor:
+            row = await cursor.fetchone()
+            stats["total_onchain_events"] = row[0] if row else 0
+
+        async with self.db.execute("SELECT COUNT(*) FROM reports") as cursor:
+            row = await cursor.fetchone()
+            stats["total_reports"] = row[0] if row else 0
+
         return stats
+
+    @staticmethod
+    def _loads_json_list(value: Optional[str]) -> List[str]:
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+        return []
 
 
 _storage: Optional[Storage] = None

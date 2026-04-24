@@ -13,6 +13,9 @@ from logger import get_monitor_logger
 from market import close_fetcher, get_fetcher
 from models import PriceState
 from notifier import close_notifier, get_notifier
+from onchain import normalize_onchain_payload
+from reporting import ReportService
+from rules import RuleEngine
 from storage import close_storage, get_storage
 
 
@@ -26,7 +29,9 @@ class MonitorEngine:
         self.fetcher = get_fetcher()
         self.ai_service = get_ai_service()
         self.notifier = get_notifier()
+        self.rule_engine = RuleEngine()
         self.storage = None
+        self.report_service: Optional[ReportService] = None
 
         self.price_states: Dict[str, PriceState] = {}
         self.watch_list: Set[str] = set(self.config.monitor.watch_list)
@@ -43,6 +48,7 @@ class MonitorEngine:
 
     async def initialize(self) -> None:
         self.storage = await get_storage()
+        self.report_service = ReportService(self.storage)
         await self.storage.seed_watch_list(self.watch_list)
         await self._restore_watch_list()
         await self._restore_states()
@@ -140,16 +146,17 @@ class MonitorEngine:
                 "snapshot": snapshot,
             }
 
-            thresholds = self.config.monitor.thresholds
-            abs_change = abs(change)
-            if abs_change >= thresholds.major:
-                result["alert_level"] = "major"
-            elif abs_change >= thresholds.moderate:
-                result["alert_level"] = "moderate"
-            elif abs_change >= thresholds.minor:
-                result["alert_level"] = "minor"
+            decision = self.rule_engine.evaluate_market(
+                snapshot=snapshot,
+                change_percent=change,
+                thresholds=self.config.monitor.thresholds,
+                config=self.config.monitor,
+            )
+            result["alert_level"] = decision.level
+            result["rule_reasons"] = decision.reasons
+            result["rule_tags"] = decision.tags
 
-            if result["alert_level"] and state.can_alert(self.config.monitor.cooldown):
+            if decision.should_alert and state.can_alert(self.config.monitor.cooldown):
                 result["should_alert"] = True
 
             price_records.append((symbol, snapshot.price, change))
@@ -167,6 +174,8 @@ class MonitorEngine:
         change = result["change"]
         level = result["alert_level"]
         snapshot = result.get("snapshot")
+        rule_reasons = result.get("rule_reasons") or []
+        rule_tags = result.get("rule_tags") or []
 
         _, style = self.config.monitor.thresholds.get_level(change)
         insight = await self.ai_service.generate_insight(
@@ -176,6 +185,7 @@ class MonitorEngine:
             level=level,
             style=style,
             snapshot=snapshot,
+            context={"rule_reasons": rule_reasons, "rule_tags": rule_tags},
         )
 
         success = await self.notifier.send_alert(symbol, price, change, level, insight.comment)
@@ -187,7 +197,16 @@ class MonitorEngine:
             state.mark_alerted()
 
         if self.storage:
-            await self.storage.save_alert(symbol, price, change, level, insight.comment)
+            await self.storage.save_alert(
+                symbol,
+                price,
+                change,
+                level,
+                insight.comment,
+                insight=insight,
+                rule_reasons=rule_reasons,
+                rule_tags=rule_tags,
+            )
             await self.storage.update_symbol_state(symbol, price, datetime.now())
 
         await self._trigger_callbacks(
@@ -199,10 +218,92 @@ class MonitorEngine:
                 "level": level,
                 "ai_comment": insight.comment,
                 "sentiment": insight.sentiment,
+                "event_type": insight.event_type,
+                "risk_hint": insight.risk_hint,
+                "suggested_action": insight.suggested_action,
+                "confidence": insight.confidence,
+                "rule_reasons": rule_reasons,
+                "rule_tags": rule_tags,
                 "sent_at": datetime.now().isoformat(),
             },
         )
         return True
+
+    async def process_onchain_payload(self, payload: Any, source: str = "webhook") -> Dict[str, Any]:
+        """处理链上 webhook，支持单条或批量 JSON。"""
+        events = normalize_onchain_payload(payload, source=source)
+        processed = []
+        alerts = []
+
+        for event in events:
+            decision = self.rule_engine.evaluate_onchain(event, self.config.onchain)
+            insight = None
+            sent = False
+
+            if decision.should_alert and decision.level:
+                insight = await self.ai_service.generate_onchain_insight(
+                    event,
+                    decision.level,
+                    context={"rule_reasons": decision.reasons, "rule_tags": decision.tags},
+                )
+                sent = await self.notifier.send_onchain_alert(
+                    symbol=event.symbol,
+                    event_type=event.event_type,
+                    amount_usd=event.amount_usd,
+                    level=decision.level,
+                    ai_comment=insight.comment,
+                )
+                alerts.append(
+                    {
+                        "event_id": event.event_id,
+                        "sent": sent,
+                        "level": decision.level,
+                        "symbol": event.symbol,
+                    }
+                )
+
+            if self.storage:
+                await self.storage.save_onchain_event(
+                    event,
+                    rule_level=decision.level,
+                    rule_reasons=decision.reasons,
+                    rule_tags=decision.tags,
+                    insight=insight,
+                )
+
+            processed.append(
+                {
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "symbol": event.symbol,
+                    "should_alert": decision.should_alert,
+                    "level": decision.level,
+                    "reasons": decision.reasons,
+                    "tags": decision.tags,
+                }
+            )
+
+        return {
+            "processed": len(processed),
+            "alerts_triggered": len([item for item in alerts if item["sent"]]),
+            "events": processed,
+            "alerts": alerts,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    async def generate_daily_report(
+        self,
+        lookback_hours: Optional[int] = None,
+        send: bool = False,
+    ) -> Dict[str, Any]:
+        if self.report_service is None:
+            if not self.storage:
+                self.storage = await get_storage()
+            self.report_service = ReportService(self.storage)
+        report = await self.report_service.generate_daily_report(lookback_hours)
+        if send:
+            report["sent"] = await self.notifier.send_report(report)
+        return report
 
     async def run_once(self) -> Dict[str, Any]:
         results = await self.check_prices()
@@ -232,6 +333,8 @@ class MonitorEngine:
                     self._print_status(summary)
                     if self._should_run_health_check():
                         await self._health_check()
+                    if self._should_generate_daily_report():
+                        await self.generate_daily_report(send=True)
 
                 await asyncio.sleep(self.config.monitor.interval)
             except asyncio.CancelledError:
@@ -268,6 +371,22 @@ class MonitorEngine:
             self._last_health_check_at = now
             return True
         return False
+
+    def _should_generate_daily_report(self) -> bool:
+        reporting = self.config.reporting
+        if not reporting.enabled or not reporting.auto_send:
+            return False
+
+        now = datetime.now()
+        if now.hour != reporting.daily_hour or now.minute >= max(1, self.config.monitor.interval // 60 + 1):
+            return False
+
+        key = now.strftime("%Y-%m-%d")
+        if getattr(self, "_last_report_date", None) == key:
+            return False
+
+        self._last_report_date = key
+        return True
 
     async def _health_check(self) -> None:
         if self.failure_count < self.config.health_check.max_failures:

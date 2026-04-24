@@ -122,9 +122,12 @@ onchain:
 
 # 报告层配置
 reporting:
+  enabled: true
   output_dir: "./reports"
   default_lookback_hours: 24
   major_only: true
+  auto_send: false
+  daily_hour: 8
 
 # 本地服务配置
 service:
