@@ -19,9 +19,12 @@
 """
 import argparse
 import asyncio
+import hashlib
+import hmac
 import json
 import signal
 import sys
+import time
 from pathlib import Path
 
 from aiohttp import web
@@ -103,7 +106,20 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
             {
                 "name": "crypto-monitor",
                 "status": "ok" if engine.failure_count < config.health_check.max_failures else "degraded",
-                "endpoints": ["/", "/health", "/status", "/webhooks/onchain", "/reports/daily"],
+                "endpoints": [
+                    "/",
+                    "/health",
+                    "/status",
+                    "/statistics",
+                    "/watchlist",
+                    "/alerts",
+                    "/events/onchain",
+                    "/notifications",
+                    "/control/pause",
+                    "/control/resume",
+                    "/webhooks/onchain",
+                    "/reports/daily",
+                ],
             }
         )
 
@@ -120,6 +136,45 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
     async def status(_request: web.Request) -> web.Response:
         return web.json_response(engine.get_status())
 
+    async def statistics(_request: web.Request) -> web.Response:
+        storage = await get_storage()
+        return web.json_response(await storage.get_statistics())
+
+    async def watchlist(_request: web.Request) -> web.Response:
+        return web.json_response({"watch_list": sorted(engine.watch_list)})
+
+    async def add_watch_symbol(request: web.Request) -> web.Response:
+        if not _check_admin(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "invalid json"}, status=400)
+        symbol = str(payload.get("symbol") or "").strip().upper()
+        if not symbol:
+            return web.json_response({"error": "symbol is required"}, status=400)
+        await engine.add_symbol(symbol)
+        return web.json_response({"ok": True, "watch_list": sorted(engine.watch_list)})
+
+    async def remove_watch_symbol(request: web.Request) -> web.Response:
+        if not _check_admin(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        symbol = request.match_info["symbol"].strip().upper()
+        await engine.remove_symbol(symbol)
+        return web.json_response({"ok": True, "watch_list": sorted(engine.watch_list)})
+
+    async def pause(_request: web.Request) -> web.Response:
+        if not _check_admin(_request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        engine.pause()
+        return web.json_response(engine.get_status())
+
+    async def resume(_request: web.Request) -> web.Response:
+        if not _check_admin(_request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        engine.resume()
+        return web.json_response(engine.get_status())
+
     async def onchain_webhook(request: web.Request) -> web.Response:
         token = config.onchain.webhook_auth_token
         if token:
@@ -127,9 +182,13 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
             if provided != token:
                 return web.json_response({"error": "unauthorized"}, status=401)
 
+        raw_body = await request.read()
+        if not _verify_webhook_signature(request, raw_body):
+            return web.json_response({"error": "invalid signature"}, status=401)
+
         try:
-            payload = await request.json()
-        except json.JSONDecodeError:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return web.json_response({"error": "invalid json"}, status=400)
 
         source = request.query.get("source", "webhook")
@@ -143,11 +202,42 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
         result = await engine.generate_daily_report(lookback_hours=lookback_hours, send=send)
         return web.json_response(result)
 
+    async def alerts(request: web.Request) -> web.Response:
+        storage = await get_storage()
+        symbol = request.query.get("symbol")
+        hours = _positive_int(request.query.get("hours"), default=24)
+        limit = _positive_int(request.query.get("limit"), default=100)
+        return web.json_response(await storage.get_alert_history(symbol=symbol, hours=hours, limit=limit))
+
+    async def onchain_events(request: web.Request) -> web.Response:
+        storage = await get_storage()
+        hours = _positive_int(request.query.get("hours"), default=24)
+        limit = _positive_int(request.query.get("limit"), default=100)
+        return web.json_response(await storage.get_onchain_events(hours=hours, limit=limit))
+
+    async def notification_deliveries(request: web.Request) -> web.Response:
+        storage = await get_storage()
+        hours = _positive_int(request.query.get("hours"), default=24)
+        limit = _positive_int(request.query.get("limit"), default=100)
+        target_id = request.query.get("target_id")
+        return web.json_response(
+            await storage.get_notification_deliveries(hours=hours, limit=limit, target_id=target_id)
+        )
+
     app = web.Application()
     app.add_routes([
         web.get("/", index),
         web.get("/health", health),
         web.get("/status", status),
+        web.get("/statistics", statistics),
+        web.get("/watchlist", watchlist),
+        web.post("/watchlist", add_watch_symbol),
+        web.delete("/watchlist/{symbol}", remove_watch_symbol),
+        web.get("/alerts", alerts),
+        web.get("/events/onchain", onchain_events),
+        web.get("/notifications", notification_deliveries),
+        web.post("/control/pause", pause),
+        web.post("/control/resume", resume),
         web.post("/webhooks/onchain", onchain_webhook),
         web.post("/reports/daily", daily_report),
     ])
@@ -158,6 +248,46 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
     await site.start()
     print(f"🌐 Python 服务已监听 http://{config.service.host}:{config.service.port}")
     return runner, site
+
+
+def _positive_int(value: str | None, default: int) -> int:
+    if value and value.isdigit():
+        return max(1, int(value))
+    return default
+
+
+def _check_admin(request: web.Request) -> bool:
+    token = get_config().service.admin_token
+    if not token:
+        return True
+    provided = request.headers.get("X-Admin-Token") or request.query.get("admin_token")
+    return hmac.compare_digest(provided or "", token)
+
+
+def _verify_webhook_signature(request: web.Request, raw_body: bytes) -> bool:
+    config = get_config()
+    secret = config.onchain.webhook_signature_secret
+    if not secret:
+        return True
+
+    timestamp = request.headers.get("X-Webhook-Timestamp")
+    if timestamp:
+        try:
+            ts = int(timestamp)
+        except ValueError:
+            return False
+        if abs(int(time.time()) - ts) > config.onchain.max_clock_skew_seconds:
+            return False
+
+    header_name = config.onchain.webhook_signature_header
+    provided = request.headers.get(header_name, "")
+    if not provided:
+        return False
+
+    signed_payload = raw_body if not timestamp else f"{timestamp}.".encode("utf-8") + raw_body
+    expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    normalized = provided.removeprefix("sha256=").strip()
+    return hmac.compare_digest(normalized, expected)
 
 
 async def test_connection():

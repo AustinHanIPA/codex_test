@@ -136,8 +136,10 @@
 职责：
 
 - 查询近期市场告警和链上事件。
+- 查询通知投递状态。
 - 按配置过滤高价值事件。
 - 生成 Markdown 日报。
+- 汇总通知失败。
 - 写入本地 `reports/`。
 - 保存报告记录到 SQLite。
 
@@ -181,22 +183,23 @@ MonitorEngine
 ### 5.2 链上事件流程
 
 1. 外部 provider 调用 `POST /webhooks/onchain`。
-2. `main.py` 做 token 校验和 JSON 解析。
+2. `main.py` 做 token 校验、HMAC 签名校验和 JSON 解析。
 3. `MonitorEngine.process_onchain_payload()` 接收 payload。
 4. `onchain.py` 将 provider payload 归一化为 `OnchainEvent`。
-5. `RuleEngine.evaluate_onchain()` 判断巨鲸转账或追踪地址活动。
-6. AI 生成链上事件洞察。
-7. Telegram 发送链上事件告警。
-8. SQLite 保存原始事件、规则结果和 AI 输出。
+5. 通过 `event_id` 检查重复事件，重复事件跳过通知。
+6. `RuleEngine.evaluate_onchain()` 判断配置规则、巨鲸转账或追踪地址活动。
+7. AI 生成链上事件洞察。
+8. Telegram 发送链上事件告警。
+9. SQLite 保存原始事件、规则结果、AI 输出和通知投递结果。
 
 ### 5.3 日报流程
 
 1. 手动调用 `POST /reports/daily`，或主循环根据 `reporting.auto_send` 自动触发。
-2. `ReportService` 查询近期告警和链上事件。
+2. `ReportService` 查询近期告警、链上事件和投递状态。
 3. 按 `reporting.major_only` 过滤。
 4. 生成 Markdown。
 5. 写入 `reports/` 并保存到 `reports` 表。
-6. 如果 `send=true` 或自动发送开启，则推送到 Telegram。
+6. 如果 `send=true` 或自动发送开启，则推送到 Telegram 并记录投递结果。
 
 ## 6. HTTP 接口
 
@@ -215,10 +218,43 @@ MonitorEngine
 - `GET /status`
   - 返回监控名单、运行状态、失败次数、启动时间。
 
+- `GET /statistics`
+  - 返回价格、告警、链上事件、报告和通知投递统计。
+
+- `GET /watchlist`
+  - 返回当前监控名单。
+
+- `POST /watchlist`
+  - 添加监控币种。
+  - 写操作支持 `X-Admin-Token` 或 `?admin_token=...`。
+
+- `DELETE /watchlist/{symbol}`
+  - 移除监控币种。
+  - 写操作支持 `X-Admin-Token` 或 `?admin_token=...`。
+
+- `GET /alerts`
+  - 查询近期价格告警。
+  - 支持 query：`symbol=BTC`、`hours=24`、`limit=100`
+
+- `GET /events/onchain`
+  - 查询近期链上事件。
+  - 支持 query：`hours=24`、`limit=100`
+
+- `GET /notifications`
+  - 查询通知投递记录。
+  - 支持 query：`target_id=...`、`hours=24`、`limit=100`
+
+- `POST /control/pause`
+  - 暂停监控主循环。
+
+- `POST /control/resume`
+  - 恢复监控主循环。
+
 - `POST /webhooks/onchain`
   - 接收链上事件。
   - 支持 query：`source=helius|quicknode|webhook`
   - 支持鉴权：`X-Webhook-Token` 或 `?token=...`
+  - 支持 HMAC-SHA256 签名：默认读取 `X-Webhook-Signature`
 
 - `POST /reports/daily`
   - 生成日报。
@@ -246,6 +282,12 @@ MonitorEngine
 - `onchain.tracked_addresses`
 - `onchain.whale_transfer_threshold_usd`
 - `onchain.webhook_auth_token`
+- `onchain.webhook_signature_secret`
+- `onchain.webhook_signature_header`
+- `onchain.max_clock_skew_seconds`
+- `rules.enabled`
+- `rules.market`
+- `rules.onchain`
 - `reporting.enabled`
 - `reporting.output_dir`
 - `reporting.default_lookback_hours`
@@ -253,6 +295,7 @@ MonitorEngine
 - `reporting.auto_send`
 - `reporting.daily_hour`
 - `service.port`
+- `service.admin_token`
 
 ## 8. 数据库设计
 
@@ -281,6 +324,7 @@ MonitorEngine
 - `confidence`
 - `rule_reasons`
 - `rule_tags`
+- `matched_rules`
 - `telegram_message_id`
 - `sent_at`
 
@@ -318,6 +362,7 @@ MonitorEngine
 - `rule_level`
 - `rule_reasons`
 - `rule_tags`
+- `matched_rules`
 - `ai_comment`
 - `sentiment`
 - `risk_hint`
@@ -336,6 +381,20 @@ MonitorEngine
 - `lookback_hours`
 - `generated_at`
 
+### 8.7 `notification_deliveries`
+
+保存通知投递记录：
+
+- `event_kind`
+- `target_id`
+- `channel`
+- `target`
+- `status`
+- `error`
+- `metadata`
+- `delivered_at`
+- `created_at`
+
 ## 9. Schema 迁移说明
 
 当前没有独立 migration 框架，采用启动时自动建表和补列：
@@ -349,6 +408,7 @@ MonitorEngine
 - `alerts` 新增结构化 AI 字段和规则字段。
 - 新增 `onchain_events` 表。
 - 新增 `reports` 表。
+- 新增 `notification_deliveries` 表。
 
 ## 10. 可靠性设计
 
@@ -362,12 +422,12 @@ MonitorEngine
 - 监控名单和价格状态恢复。
 - 健康检查和轻量自恢复。
 - webhook token 校验。
-
-仍需补齐：
-
 - webhook 签名校验。
 - 事件幂等和重复投递去重。
 - Telegram 投递状态落库。
+
+仍需补齐：
+
 - 死信队列或失败重放。
 - Prometheus 指标。
 
@@ -378,10 +438,13 @@ MonitorEngine
 - AI JSON 和文本兜底解析。
 - 市场快照归一化。
 - 规则引擎市场和链上判断。
+- 配置化规则命中。
 - Helius/QuickNode payload 归一化。
+- webhook HMAC 签名校验。
 - 监控名单持久化。
 - 批量价格写入。
 - 链上事件存储。
+- 通知投递记录。
 - 日报生成。
 
 推荐继续补充：
@@ -393,11 +456,11 @@ MonitorEngine
 
 ## 12. 演进建议
 
-### Step 1：事件可靠性
+### Step 1：失败重放和观测
 
-- `event_id` 去重。
-- webhook 签名校验。
-- 投递结果持久化。
+- 失败通知重试入口。
+- 死信事件列表。
+- Prometheus 指标。
 
 ### Step 2：多数据源
 
@@ -414,4 +477,4 @@ MonitorEngine
 
 ## 13. 结论
 
-当前项目已经具备“价格监控 + 链上 webhook + 规则引擎 + AI 洞察 + Telegram + SQLite + 日报”的最小闭环。下一阶段不需要推翻重写，重点应放在事件可靠性、多源数据接入和规则配置化上。
+当前项目已经具备“价格监控 + 链上 webhook + HMAC 校验 + 事件去重 + 配置化规则 + AI 洞察 + Telegram + SQLite + 投递审计 + 日报 + 轻量控制面”的可运营 MVP 闭环。下一阶段不需要推翻重写，重点应放在失败重放、多源数据接入、规则 DSL 和 Web 控制台体验上。

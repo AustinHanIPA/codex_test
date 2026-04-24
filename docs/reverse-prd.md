@@ -77,7 +77,9 @@
 - 基于 `minor/moderate/major` 三级阈值判断价格异动。
 - 支持最小市值、最小 24h 成交额等过滤条件。
 - 支持巨鲸转账阈值判断。
+- 支持 `config.yaml` 中的 `rules.market` 和 `rules.onchain` 配置化规则。
 - 输出规则原因 `rule_reasons` 和规则标签 `rule_tags`。
+- 输出命中的规则 ID `matched_rules`。
 
 ### 3.4 链上事件接入
 
@@ -89,6 +91,8 @@
 - 支持 QuickNode 风格 `data/events/transactions` 包装。
 - 将事件归一化为 `OnchainEvent`。
 - 支持 webhook token 校验。
+- 支持 HMAC-SHA256 webhook 签名校验。
+- 支持基于 `event_id` 的重复事件跳过。
 - 保存链上事件及规则判断结果。
 
 ### 3.5 AI 洞察
@@ -116,6 +120,7 @@
 - 链上事件告警通知。
 - 健康检查通知。
 - 日报内容推送。
+- 通知投递结果记录。
 - 总量限流和同目标冷却。
 
 ### 3.7 存储能力
@@ -128,6 +133,7 @@
 - 监控名单 `watchlist_symbols`
 - 链上事件 `onchain_events`
 - 报告记录 `reports`
+- 通知投递记录 `notification_deliveries`
 
 ### 3.8 报告能力
 
@@ -135,6 +141,7 @@
 
 - 生成 Markdown 日报。
 - 汇总市场告警和链上事件。
+- 汇总通知投递失败。
 - 按 `major_only` 过滤高价值事件。
 - 通过 `POST /reports/daily` 手动生成日报。
 - 通过 `POST /reports/daily?send=true` 生成并推送日报。
@@ -147,6 +154,15 @@
 - `GET /`
 - `GET /health`
 - `GET /status`
+- `GET /statistics`
+- `GET /watchlist`
+- `POST /watchlist`
+- `DELETE /watchlist/{symbol}`
+- `GET /alerts`
+- `GET /events/onchain`
+- `GET /notifications`
+- `POST /control/pause`
+- `POST /control/resume`
 - `POST /webhooks/onchain`
 - `POST /reports/daily`
 
@@ -169,8 +185,9 @@
 
 1. 作为运维者，我希望服务有健康检查接口。
 2. 作为运维者，我希望重启后恢复监控名单和价格状态。
-3. 作为运维者，我希望外部 webhook 有基础鉴权。
+3. 作为运维者，我希望外部 webhook 有 token 和签名校验。
 4. 作为运维者，我希望日志、数据库、报告产物不会误提交到 Git。
+5. 作为运维者，我希望增删监控名单、暂停和恢复服务可以通过本地 HTTP 控制面完成。
 
 ## 5. 非功能需求
 
@@ -197,30 +214,28 @@
 
 ## 6. 当前未完成需求
 
-1. 事件幂等和重复 webhook 去重还不完整。
-2. Telegram 投递状态未落库。
-3. Notion 日报未接入。
-4. DEX Screener / Birdeye 等市场数据源未接入。
-5. WebSocket/Streams 模式未接入。
-6. 自定义组合规则仍未配置化。
-7. Web 控制台、用户体系和多租户未实现。
-8. 历史回放、回测和告警质量评估未实现。
+1. Notion 日报未接入。
+2. DEX Screener / Birdeye 等市场数据源未接入。
+3. WebSocket/Streams 模式未接入。
+4. 规则仍是轻量配置，还没有完整 AND/OR DSL 和规则管理界面。
+5. Web 控制台、用户体系和多租户未实现。
+6. 失败通知还没有重试队列和死信处理。
+7. 历史回放、回测和告警质量评估未实现。
 
 ## 7. 优先级建议
 
 ### P0
 
-- 链上事件幂等键与去重。
-- webhook 签名校验或 provider 级安全校验。
-- 规则引擎配置化。
-- 日报推送稳定化。
+- 失败投递重试和死信列表。
+- 真实 Helius/QuickNode webhook 样本适配。
+- DEX Screener / Birdeye 第二数据源。
+- Notion 日报。
 
 ### P1
 
-- 接入 Helius/QuickNode 的真实 webhook 配置流程。
-- 接入 DEX Screener / Birdeye 作为第二市场数据源。
+- 规则 DSL 增强和管理接口。
 - 增加事件查询和回放接口。
-- 将报告推送到 Notion。
+- 增加告警质量统计。
 
 ### P2
 

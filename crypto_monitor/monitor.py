@@ -29,7 +29,7 @@ class MonitorEngine:
         self.fetcher = get_fetcher()
         self.ai_service = get_ai_service()
         self.notifier = get_notifier()
-        self.rule_engine = RuleEngine()
+        self.rule_engine = RuleEngine(self.config.rules)
         self.storage = None
         self.report_service: Optional[ReportService] = None
 
@@ -155,6 +155,7 @@ class MonitorEngine:
             result["alert_level"] = decision.level
             result["rule_reasons"] = decision.reasons
             result["rule_tags"] = decision.tags
+            result["matched_rules"] = decision.matched_rules
 
             if decision.should_alert and state.can_alert(self.config.monitor.cooldown):
                 result["should_alert"] = True
@@ -176,6 +177,7 @@ class MonitorEngine:
         snapshot = result.get("snapshot")
         rule_reasons = result.get("rule_reasons") or []
         rule_tags = result.get("rule_tags") or []
+        matched_rules = result.get("matched_rules") or []
 
         _, style = self.config.monitor.thresholds.get_level(change)
         insight = await self.ai_service.generate_insight(
@@ -188,7 +190,18 @@ class MonitorEngine:
             context={"rule_reasons": rule_reasons, "rule_tags": rule_tags},
         )
 
+        target_id = f"price:{symbol}:{datetime.now().isoformat(timespec='seconds')}"
         success = await self.notifier.send_alert(symbol, price, change, level, insight.comment)
+        if self.storage:
+            await self.storage.save_notification_delivery(
+                event_kind="price_alert",
+                target_id=target_id,
+                channel="telegram",
+                target=symbol,
+                status="sent" if success else "failed",
+                error=None if success else "telegram send failed",
+                metadata={"level": level, "change": change},
+            )
         if not success:
             return False
 
@@ -206,6 +219,7 @@ class MonitorEngine:
                 insight=insight,
                 rule_reasons=rule_reasons,
                 rule_tags=rule_tags,
+                matched_rules=matched_rules,
             )
             await self.storage.update_symbol_state(symbol, price, datetime.now())
 
@@ -224,6 +238,7 @@ class MonitorEngine:
                 "confidence": insight.confidence,
                 "rule_reasons": rule_reasons,
                 "rule_tags": rule_tags,
+                "matched_rules": matched_rules,
                 "sent_at": datetime.now().isoformat(),
             },
         )
@@ -236,6 +251,21 @@ class MonitorEngine:
         alerts = []
 
         for event in events:
+            if self.storage and await self.storage.has_onchain_event(event.event_id):
+                processed.append(
+                    {
+                        "event_id": event.event_id,
+                        "event_type": event.event_type,
+                        "symbol": event.symbol,
+                        "duplicate": True,
+                        "should_alert": False,
+                        "level": None,
+                        "reasons": ["duplicate event skipped"],
+                        "tags": [],
+                    }
+                )
+                continue
+
             decision = self.rule_engine.evaluate_onchain(event, self.config.onchain)
             insight = None
             sent = False
@@ -253,6 +283,16 @@ class MonitorEngine:
                     level=decision.level,
                     ai_comment=insight.comment,
                 )
+                if self.storage:
+                    await self.storage.save_notification_delivery(
+                        event_kind="onchain_alert",
+                        target_id=event.event_id,
+                        channel="telegram",
+                        target=event.symbol or event.event_type,
+                        status="sent" if sent else "failed",
+                        error=None if sent else "telegram send failed",
+                        metadata={"level": decision.level, "source": event.source},
+                    )
                 alerts.append(
                     {
                         "event_id": event.event_id,
@@ -268,6 +308,7 @@ class MonitorEngine:
                     rule_level=decision.level,
                     rule_reasons=decision.reasons,
                     rule_tags=decision.tags,
+                    matched_rules=decision.matched_rules,
                     insight=insight,
                 )
 
@@ -280,6 +321,7 @@ class MonitorEngine:
                     "level": decision.level,
                     "reasons": decision.reasons,
                     "tags": decision.tags,
+                    "matched_rules": decision.matched_rules,
                 }
             )
 
@@ -302,7 +344,18 @@ class MonitorEngine:
             self.report_service = ReportService(self.storage)
         report = await self.report_service.generate_daily_report(lookback_hours)
         if send:
-            report["sent"] = await self.notifier.send_report(report)
+            sent = await self.notifier.send_report(report)
+            report["sent"] = sent
+            if self.storage:
+                await self.storage.save_notification_delivery(
+                    event_kind="daily_report",
+                    target_id=f"report:{report.get('id')}",
+                    channel="telegram",
+                    target="daily_report",
+                    status="sent" if sent else "failed",
+                    error=None if sent else "telegram send failed",
+                    metadata={"lookback_hours": report.get("lookback_hours")},
+                )
         return report
 
     async def run_once(self) -> Dict[str, Any]:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "crypto_monitor"))
 
-from config import MonitorConfig, OnchainConfig, ThresholdConfig
+from config import MonitorConfig, OnchainConfig, RulesConfig, ThresholdConfig
 from models import MarketSnapshot, OnchainEvent
 from rules import RuleEngine
 
@@ -54,6 +54,77 @@ class RuleEngineTests(unittest.TestCase):
         self.assertTrue(decision.should_alert)
         self.assertEqual(decision.level, "major")
         self.assertIn("whale-transfer", decision.tags)
+
+    def test_configured_market_rule_records_match(self):
+        engine = RuleEngine(
+            RulesConfig(
+                market=[
+                    {
+                        "id": "configured-btc-move",
+                        "level": "moderate",
+                        "tags": ["configured-rule"],
+                        "all": [{"symbol_in": ["BTC"]}, {"price_change_abs_gte": 2}],
+                    }
+                ]
+            )
+        )
+        decision = engine.evaluate_market(
+            snapshot=MarketSnapshot(pair="BTCUSDT", symbol="BTC", price=65000.0),
+            change_percent=2.2,
+            thresholds=ThresholdConfig(),
+            config=MonitorConfig(),
+        )
+
+        self.assertTrue(decision.should_alert)
+        self.assertEqual(decision.level, "moderate")
+        self.assertEqual(decision.matched_rules, ["configured-btc-move"])
+
+    def test_configured_onchain_rule_records_match(self):
+        engine = RuleEngine(
+            RulesConfig(
+                onchain=[
+                    {
+                        "id": "new-pair",
+                        "level": "moderate",
+                        "tags": ["new-pair"],
+                        "all": [{"event_type_in": ["NewPairCreated"]}],
+                    }
+                ]
+            )
+        )
+        decision = engine.evaluate_onchain(
+            OnchainEvent(
+                event_id="tx-2",
+                source="test",
+                event_type="NewPairCreated",
+                symbol="PEPE",
+            ),
+            OnchainConfig(),
+        )
+
+        self.assertTrue(decision.should_alert)
+        self.assertEqual(decision.matched_rules, ["new-pair"])
+
+    def test_unknown_configured_condition_does_not_match(self):
+        engine = RuleEngine(
+            RulesConfig(
+                market=[
+                    {
+                        "id": "typo-rule",
+                        "level": "major",
+                        "all": [{"price_change_typo": 1}],
+                    }
+                ]
+            )
+        )
+        decision = engine.evaluate_market(
+            snapshot=MarketSnapshot(pair="BTCUSDT", symbol="BTC", price=65000.0),
+            change_percent=0.1,
+            thresholds=ThresholdConfig(),
+            config=MonitorConfig(),
+        )
+
+        self.assertFalse(decision.should_alert)
 
 
 if __name__ == "__main__":

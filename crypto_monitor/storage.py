@@ -76,6 +76,7 @@ class Storage:
                 confidence REAL DEFAULT 0,
                 rule_reasons TEXT,
                 rule_tags TEXT,
+                matched_rules TEXT,
                 telegram_message_id INTEGER,
                 sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -122,6 +123,7 @@ class Storage:
                 rule_level TEXT,
                 rule_reasons TEXT,
                 rule_tags TEXT,
+                matched_rules TEXT,
                 ai_comment TEXT,
                 sentiment TEXT,
                 risk_hint TEXT,
@@ -134,6 +136,8 @@ class Storage:
             """
         )
 
+        await self._ensure_onchain_event_columns()
+
         await self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS reports (
@@ -143,6 +147,23 @@ class Storage:
                 content TEXT NOT NULL,
                 lookback_hours INTEGER,
                 generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        await self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_kind TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                target TEXT,
+                status TEXT NOT NULL,
+                error TEXT,
+                metadata TEXT,
+                delivered_at DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -184,6 +205,18 @@ class Storage:
             ON onchain_events(symbol)
             """
         )
+        await self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_notification_deliveries_target
+            ON notification_deliveries(target_id)
+            """
+        )
+        await self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created_at
+            ON notification_deliveries(created_at)
+            """
+        )
 
         await self.db.commit()
         self.logger.debug("数据表初始化完成")
@@ -200,10 +233,22 @@ class Storage:
             "confidence": "REAL DEFAULT 0",
             "rule_reasons": "TEXT",
             "rule_tags": "TEXT",
+            "matched_rules": "TEXT",
         }
         for name, column_type in columns.items():
             if name not in existing:
                 await self.db.execute(f"ALTER TABLE alerts ADD COLUMN {name} {column_type}")
+
+    async def _ensure_onchain_event_columns(self) -> None:
+        async with self.db.execute("PRAGMA table_info(onchain_events)") as cursor:
+            rows = await cursor.fetchall()
+        existing = {row[1] for row in rows}
+        columns = {
+            "matched_rules": "TEXT",
+        }
+        for name, column_type in columns.items():
+            if name not in existing:
+                await self.db.execute(f"ALTER TABLE onchain_events ADD COLUMN {name} {column_type}")
 
     async def save_price(
         self,
@@ -237,6 +282,7 @@ class Storage:
         insight: Optional[AIInsight] = None,
         rule_reasons: Optional[Sequence[str]] = None,
         rule_tags: Optional[Sequence[str]] = None,
+        matched_rules: Optional[Sequence[str]] = None,
     ) -> None:
         comment = ai_comment or (insight.comment if insight else None)
         await self.db.execute(
@@ -245,9 +291,9 @@ class Storage:
             (
                 symbol, price, change_percent, alert_level, ai_comment,
                 sentiment, event_type, risk_hint, suggested_action, confidence,
-                rule_reasons, rule_tags, telegram_message_id
+                rule_reasons, rule_tags, matched_rules, telegram_message_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -262,6 +308,7 @@ class Storage:
                 insight.confidence if insight else 0.0,
                 json.dumps(list(rule_reasons or []), ensure_ascii=False),
                 json.dumps(list(rule_tags or []), ensure_ascii=False),
+                json.dumps(list(matched_rules or []), ensure_ascii=False),
                 telegram_message_id,
             ),
         )
@@ -274,6 +321,7 @@ class Storage:
         rule_level: Optional[str] = None,
         rule_reasons: Optional[Sequence[str]] = None,
         rule_tags: Optional[Sequence[str]] = None,
+        matched_rules: Optional[Sequence[str]] = None,
         insight: Optional[AIInsight] = None,
     ) -> None:
         await self.db.execute(
@@ -282,10 +330,10 @@ class Storage:
             (
                 event_id, source, event_type, symbol, address, counterparty,
                 amount, amount_usd, direction, tx_signature, description,
-                rule_level, rule_reasons, rule_tags, ai_comment, sentiment,
+                rule_level, rule_reasons, rule_tags, matched_rules, ai_comment, sentiment,
                 risk_hint, suggested_action, confidence, observed_at, raw
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.event_id,
@@ -302,6 +350,7 @@ class Storage:
                 rule_level,
                 json.dumps(list(rule_reasons or []), ensure_ascii=False),
                 json.dumps(list(rule_tags or []), ensure_ascii=False),
+                json.dumps(list(matched_rules or []), ensure_ascii=False),
                 insight.comment if insight else None,
                 insight.sentiment if insight else None,
                 insight.risk_hint if insight else None,
@@ -309,6 +358,44 @@ class Storage:
                 insight.confidence if insight else 0.0,
                 event.observed_at or datetime.now().isoformat(),
                 json.dumps(event.raw, ensure_ascii=False),
+            ),
+        )
+        await self.db.commit()
+
+    async def has_onchain_event(self, event_id: str) -> bool:
+        async with self.db.execute(
+            "SELECT 1 FROM onchain_events WHERE event_id = ? LIMIT 1",
+            (event_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row is not None
+
+    async def save_notification_delivery(
+        self,
+        event_kind: str,
+        target_id: str,
+        channel: str,
+        status: str,
+        target: Optional[str] = None,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        delivered_at = datetime.now().isoformat() if status == "sent" else None
+        await self.db.execute(
+            """
+            INSERT INTO notification_deliveries
+            (event_kind, target_id, channel, target, status, error, metadata, delivered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_kind,
+                target_id,
+                channel,
+                target,
+                status,
+                error,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                delivered_at,
             ),
         )
         await self.db.commit()
@@ -449,7 +536,7 @@ class Storage:
             query = """
                 SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at,
                        sentiment, event_type, risk_hint, suggested_action, confidence,
-                       rule_reasons, rule_tags
+                       rule_reasons, rule_tags, matched_rules
                 FROM alerts
                 WHERE symbol = ? AND sent_at >= ?
                 ORDER BY sent_at DESC
@@ -460,7 +547,7 @@ class Storage:
             query = """
                 SELECT symbol, price, change_percent, alert_level, ai_comment, sent_at,
                        sentiment, event_type, risk_hint, suggested_action, confidence,
-                       rule_reasons, rule_tags
+                       rule_reasons, rule_tags, matched_rules
                 FROM alerts
                 WHERE sent_at >= ?
                 ORDER BY sent_at DESC
@@ -485,6 +572,7 @@ class Storage:
                 "confidence": row[10],
                 "rule_reasons": self._loads_json_list(row[11]),
                 "rule_tags": self._loads_json_list(row[12]),
+                "matched_rules": self._loads_json_list(row[13]),
             }
             for row in rows
         ]
@@ -499,7 +587,7 @@ class Storage:
             """
             SELECT event_id, source, event_type, symbol, address, counterparty,
                    amount, amount_usd, direction, tx_signature, description,
-                   rule_level, rule_reasons, rule_tags, ai_comment, sentiment,
+                   rule_level, rule_reasons, rule_tags, matched_rules, ai_comment, sentiment,
                    risk_hint, suggested_action, confidence, observed_at, created_at
             FROM onchain_events
             WHERE created_at >= ?
@@ -526,13 +614,59 @@ class Storage:
                 "rule_level": row[11],
                 "rule_reasons": self._loads_json_list(row[12]),
                 "rule_tags": self._loads_json_list(row[13]),
-                "ai_comment": row[14],
-                "sentiment": row[15],
-                "risk_hint": row[16],
-                "suggested_action": row[17],
-                "confidence": row[18],
-                "observed_at": row[19],
-                "created_at": row[20],
+                "matched_rules": self._loads_json_list(row[14]),
+                "ai_comment": row[15],
+                "sentiment": row[16],
+                "risk_hint": row[17],
+                "suggested_action": row[18],
+                "confidence": row[19],
+                "observed_at": row[20],
+                "created_at": row[21],
+            }
+            for row in rows
+        ]
+
+    async def get_notification_deliveries(
+        self,
+        hours: int = 24,
+        limit: int = 100,
+        target_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        since = datetime.now() - timedelta(hours=hours)
+        if target_id:
+            query = """
+                SELECT event_kind, target_id, channel, target, status, error,
+                       metadata, delivered_at, created_at
+                FROM notification_deliveries
+                WHERE created_at >= ? AND target_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params = (since.isoformat(), target_id, limit)
+        else:
+            query = """
+                SELECT event_kind, target_id, channel, target, status, error,
+                       metadata, delivered_at, created_at
+                FROM notification_deliveries
+                WHERE created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params = (since.isoformat(), limit)
+
+        async with self.db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "event_kind": row[0],
+                "target_id": row[1],
+                "channel": row[2],
+                "target": row[3],
+                "status": row[4],
+                "error": row[5],
+                "metadata": self._loads_json_dict(row[6]),
+                "delivered_at": row[7],
+                "created_at": row[8],
             }
             for row in rows
         ]
@@ -558,10 +692,16 @@ class Storage:
         )
         onchain_deleted = result.rowcount
 
+        result = await self.db.execute(
+            "DELETE FROM notification_deliveries WHERE created_at < ?",
+            (cutoff.isoformat(),),
+        )
+        delivery_deleted = result.rowcount
+
         await self.db.commit()
         self.logger.info(
             f"清理过期数据完成: 价格记录 {price_deleted} 条, 报警记录 {alert_deleted} 条, "
-            f"链上事件 {onchain_deleted} 条"
+            f"链上事件 {onchain_deleted} 条, 投递记录 {delivery_deleted} 条"
         )
 
     async def get_statistics(self) -> Dict[str, Any]:
@@ -599,6 +739,16 @@ class Storage:
             row = await cursor.fetchone()
             stats["total_reports"] = row[0] if row else 0
 
+        async with self.db.execute("SELECT COUNT(*) FROM notification_deliveries") as cursor:
+            row = await cursor.fetchone()
+            stats["total_notification_deliveries"] = row[0] if row else 0
+
+        async with self.db.execute(
+            "SELECT COUNT(*) FROM notification_deliveries WHERE status != 'sent'"
+        ) as cursor:
+            row = await cursor.fetchone()
+            stats["failed_notification_deliveries"] = row[0] if row else 0
+
         return stats
 
     @staticmethod
@@ -612,6 +762,16 @@ class Storage:
         if isinstance(parsed, list):
             return [str(item) for item in parsed]
         return []
+
+    @staticmethod
+    def _loads_json_dict(value: Optional[str]) -> Dict[str, Any]:
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
 
 _storage: Optional[Storage] = None

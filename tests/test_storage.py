@@ -73,6 +73,27 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         events = await self.storage.get_onchain_events(hours=24)
         self.assertEqual(events[0]["event_id"], "tx-1")
         self.assertEqual(events[0]["rule_tags"], ["whale-transfer"])
+        self.assertTrue(await self.storage.has_onchain_event("tx-1"))
+
+    async def test_notification_delivery_persistence(self):
+        await self.storage.save_notification_delivery(
+            event_kind="onchain_alert",
+            target_id="tx-1",
+            channel="telegram",
+            target="SOL",
+            status="failed",
+            error="telegram send failed",
+            metadata={"level": "major"},
+        )
+
+        deliveries = await self.storage.get_notification_deliveries(target_id="tx-1")
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]["status"], "failed")
+        self.assertEqual(deliveries[0]["metadata"], {"level": "major"})
+
+        stats = await self.storage.get_statistics()
+        self.assertEqual(stats["total_notification_deliveries"], 1)
+        self.assertEqual(stats["failed_notification_deliveries"], 1)
 
     async def test_daily_report_generation(self):
         get_config().reporting.output_dir = str(Path(self.temp_dir.name) / "reports")

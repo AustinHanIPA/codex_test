@@ -92,6 +92,7 @@
 - 保存到本地 `reports/`。
 - 保存到 SQLite。
 - 可通过 Telegram 推送。
+- 会汇总通知投递失败，便于复盘监控链路本身。
 
 这一步把项目从“只发实时消息”推进到“可复盘的监控产品”。
 
@@ -123,7 +124,7 @@ Telegram + SQLite + Markdown Report
 | 文档抓取 | `market.py` / `onchain.py` |
 | 结构化分析 | `rules.py` / `ai_service.py` |
 | 解析兜底 | `_parse_insight()` |
-| 中间产物落盘 | `storage.py` |
+| 中间产物落盘 | `storage.py` / `notification_deliveries` |
 | 人类可读报告 | `reporting.py` |
 | 可单跑入口 | CLI / HTTP 接口 |
 
@@ -141,9 +142,9 @@ Telegram + SQLite + Markdown Report
 
 目标是减少重复调用模型，降低成本和延迟。
 
-### 6.2 事件幂等
+### 6.2 失败重放
 
-在处理 webhook 前检查 `event_id` 是否已经存在，避免 provider 重试造成重复告警。
+当前已经在处理 webhook 前检查 `event_id`，避免 provider 重试造成重复告警。下一步应基于 `notification_deliveries` 增加失败重放入口。
 
 ### 6.3 报告增强
 
@@ -153,14 +154,14 @@ Telegram + SQLite + Markdown Report
 - Notion 完整版。
 - HTML 归档版。
 
-### 6.4 规则配置化
+### 6.4 规则 DSL 增强
 
-把当前 `RuleEngine` 中的代码规则迁移到配置：
+当前 `RuleEngine` 已经支持轻量配置规则，下一步应继续扩展：
 
-- 阈值。
 - AND/OR 条件。
 - watchlist 级规则。
 - token 级规则。
+- 规则启停和规则回测。
 
 ### 6.5 多数据源 provider
 
@@ -173,4 +174,4 @@ Telegram + SQLite + Markdown Report
 
 ## 7. 最终判断
 
-`api-doc-inspect` 的核心价值已经被迁移成当前项目的几个关键方向：结构化、兜底解析、可落盘、可复盘、可扩展。下一轮最值得投入的是事件幂等、provider 级安全校验、AI 缓存和规则配置化。
+`api-doc-inspect` 的核心价值已经被迁移成当前项目的几个关键方向：结构化、兜底解析、可落盘、可复盘、可扩展。下一轮最值得投入的是失败重放、provider 原生签名适配、AI 缓存、规则 DSL 和控制面体验。

@@ -118,7 +118,41 @@ onchain:
   enabled: true
   tracked_addresses: []
   whale_transfer_threshold_usd: 50000
-  webhook_auth_token: ""
+  webhook_auth_token: "${ONCHAIN_WEBHOOK_TOKEN}"
+  webhook_signature_secret: "${ONCHAIN_WEBHOOK_SECRET}"
+  webhook_signature_header: "X-Webhook-Signature"
+  max_clock_skew_seconds: 300
+
+# 可配置规则，空列表时使用内置默认规则
+rules:
+  enabled: true
+  market:
+    - id: default-major-move
+      enabled: true
+      level: major
+      tags: ["configured-rule", "price-momentum"]
+      all:
+        - price_change_abs_gte: 3
+    - id: liquid-midcap-move
+      enabled: false
+      level: moderate
+      tags: ["configured-rule", "liquid-market"]
+      all:
+        - price_change_abs_gte: 1.5
+        - volume_24h_gte: 100000
+  onchain:
+    - id: whale-transfer
+      enabled: true
+      level: major
+      tags: ["configured-rule", "whale-transfer"]
+      all:
+        - amount_usd_gte: 50000
+    - id: new-pair-created
+      enabled: true
+      level: moderate
+      tags: ["configured-rule", "new-pair"]
+      all:
+        - event_type_in: ["NewPairCreated"]
 
 # 报告层配置
 reporting:
@@ -133,3 +167,5 @@ reporting:
 service:
   host: "0.0.0.0"
   port: 28593
+  # 可选：设置后，写操作需要 X-Admin-Token 或 ?admin_token=
+  admin_token: "${SERVICE_ADMIN_TOKEN}"

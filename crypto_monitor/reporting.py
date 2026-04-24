@@ -26,13 +26,14 @@ class ReportService:
         hours = lookback_hours or self.config.default_lookback_hours
         alerts = await self.storage.get_alert_history(hours=hours, limit=200)
         onchain_events = await self.storage.get_onchain_events(hours=hours, limit=200)
+        deliveries = await self.storage.get_notification_deliveries(hours=hours, limit=200)
 
         if self.config.major_only:
             alerts = [item for item in alerts if item.get("alert_level") == "major"]
             onchain_events = [item for item in onchain_events if item.get("rule_level") == "major"]
 
         title = f"Crypto Monitor Daily Report - {datetime.now().strftime('%Y-%m-%d')}"
-        content = self._render_markdown(title, hours, alerts, onchain_events)
+        content = self._render_markdown(title, hours, alerts, onchain_events, deliveries)
         report_id = await self.storage.save_report("daily", title, content, hours)
         file_path = self._write_report_file(title, content)
 
@@ -43,6 +44,7 @@ class ReportService:
             "file_path": str(file_path),
             "alerts_count": len(alerts),
             "onchain_events_count": len(onchain_events),
+            "delivery_failures_count": len([item for item in deliveries if item.get("status") != "sent"]),
             "lookback_hours": hours,
             "generated_at": datetime.now().isoformat(),
         }
@@ -53,13 +55,16 @@ class ReportService:
         hours: int,
         alerts: List[Dict[str, Any]],
         onchain_events: List[Dict[str, Any]],
+        deliveries: List[Dict[str, Any]],
     ) -> str:
+        failed_deliveries = [item for item in deliveries if item.get("status") != "sent"]
         lines = [
             f"# {title}",
             "",
             f"- Lookback: {hours} hours",
             f"- Market alerts: {len(alerts)}",
             f"- Onchain events: {len(onchain_events)}",
+            f"- Notification failures: {len(failed_deliveries)}",
             "",
             "## Market Alerts",
         ]
@@ -92,6 +97,17 @@ class ReportService:
                     lines.append(f"  Tx: {item['tx_signature']}")
         else:
             lines.append("- No major onchain events.")
+
+        lines.extend(["", "## Delivery Health"])
+        if failed_deliveries:
+            for item in failed_deliveries[:10]:
+                lines.append(
+                    "- "
+                    f"{item.get('event_kind')} {item.get('target_id')} "
+                    f"[{item.get('channel')}] {item.get('error') or item.get('status')}"
+                )
+        else:
+            lines.append("- No notification delivery failures.")
 
         lines.extend(["", f"Generated at: {datetime.now().isoformat()}"])
         return "\n".join(lines)

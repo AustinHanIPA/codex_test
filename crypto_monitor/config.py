@@ -142,6 +142,17 @@ class OnchainConfig:
     tracked_addresses: List[str] = field(default_factory=list)
     whale_transfer_threshold_usd: float = 50000.0
     webhook_auth_token: str = ""
+    webhook_signature_secret: str = ""
+    webhook_signature_header: str = "X-Webhook-Signature"
+    max_clock_skew_seconds: int = 300
+
+
+@dataclass
+class RulesConfig:
+    """可配置规则。"""
+    enabled: bool = True
+    market: List[Dict[str, Any]] = field(default_factory=list)
+    onchain: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -160,6 +171,7 @@ class ServiceConfig:
     """本地 HTTP 服务配置"""
     host: str = "0.0.0.0"
     port: int = 28593
+    admin_token: str = ""
 
 
 @dataclass
@@ -173,6 +185,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     onchain: OnchainConfig = field(default_factory=OnchainConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
     service: ServiceConfig = field(default_factory=ServiceConfig)
     
@@ -352,6 +365,11 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
     if 'onchain' in config_data:
         config.onchain = _dict_to_dataclass(
             config_data['onchain'], OnchainConfig
+        )
+
+    if 'rules' in config_data:
+        config.rules = _dict_to_dataclass(
+            config_data['rules'], RulesConfig
         )
 
     if 'reporting' in config_data:
