@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from ai_service import close_ai_service, get_ai_service
+from binance import close_binance_fetcher
 from config import get_config
 from logger import get_monitor_logger
 from market import close_fetcher, get_fetcher
@@ -529,6 +530,7 @@ class MonitorEngine:
             await self.storage.cleanup_old_data(self.config.storage.history_retention_days)
 
         await close_fetcher()
+        await close_binance_fetcher()
         close_ai_service()
         await close_notifier()
         await close_storage()

@@ -32,6 +32,8 @@ from aiohttp import web
 # 确保项目根目录在路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
+from ar_strategy import ARStrategyEngine
+from binance import close_binance_fetcher, get_binance_fetcher
 from config import get_config, load_config
 from monitor import MonitorEngine
 from market import close_fetcher, get_fetcher
@@ -119,6 +121,7 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
                     "/control/resume",
                     "/webhooks/onchain",
                     "/reports/daily",
+                    "/strategies/ar",
                 ],
             }
         )
@@ -224,6 +227,42 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
             await storage.get_notification_deliveries(hours=hours, limit=limit, target_id=target_id)
         )
 
+    async def ar_strategy(request: web.Request) -> web.Response:
+        strategy_config = config.ar_strategy
+        if not strategy_config.enabled:
+            return web.json_response({"error": "AR strategy disabled"}, status=404)
+
+        symbol = (request.query.get("symbol") or strategy_config.symbol).strip().upper()
+        interval = (request.query.get("interval") or strategy_config.weekly_interval).strip()
+        start_time = _optional_int(request.query.get("startTime"))
+        if start_time is None:
+            start_time = strategy_config.history_start_time_ms
+        end_time = _optional_int(request.query.get("endTime"))
+        max_pages = _optional_int(request.query.get("max_pages"))
+
+        try:
+            fetcher = get_binance_fetcher()
+            klines = await fetcher.fetch_all_klines(
+                symbol=symbol,
+                interval=interval,
+                start_time=start_time,
+                end_time=end_time,
+                max_pages=max_pages,
+            )
+            signal = ARStrategyEngine(strategy_config).evaluate(symbol, klines, timeframe=interval)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=502)
+
+        return web.json_response(
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "kline_count": len(klines),
+                "latest_kline": klines[-1].as_dict() if klines else None,
+                "signal": signal.as_dict(),
+            }
+        )
+
     app = web.Application()
     app.add_routes([
         web.get("/", index),
@@ -236,6 +275,7 @@ async def create_http_server(engine: MonitorEngine) -> tuple[web.AppRunner, web.
         web.get("/alerts", alerts),
         web.get("/events/onchain", onchain_events),
         web.get("/notifications", notification_deliveries),
+        web.get("/strategies/ar", ar_strategy),
         web.post("/control/pause", pause),
         web.post("/control/resume", resume),
         web.post("/webhooks/onchain", onchain_webhook),
@@ -254,6 +294,12 @@ def _positive_int(value: str | None, default: int) -> int:
     if value and value.isdigit():
         return max(1, int(value))
     return default
+
+
+def _optional_int(value: str | None) -> int | None:
+    if value and value.isdigit():
+        return int(value)
+    return None
 
 
 def _check_admin(request: web.Request) -> bool:
@@ -391,6 +437,41 @@ async def show_status():
     await engine.cleanup()
 
 
+async def show_ar_signal() -> None:
+    """拉取 ARUSDT 历史 K 线并输出策略信号。"""
+    config = get_config()
+    strategy_config = config.ar_strategy
+    if not strategy_config.enabled:
+        print("AR 策略未启用")
+        return
+
+    fetcher = get_binance_fetcher()
+    try:
+        klines = await fetcher.fetch_all_klines(
+            symbol=strategy_config.symbol,
+            interval=strategy_config.weekly_interval,
+            start_time=strategy_config.history_start_time_ms,
+        )
+        signal = ARStrategyEngine(strategy_config).evaluate(
+            strategy_config.symbol,
+            klines,
+            timeframe=strategy_config.weekly_interval,
+        )
+        print(json.dumps(
+            {
+                "symbol": strategy_config.symbol,
+                "interval": strategy_config.weekly_interval,
+                "kline_count": len(klines),
+                "latest_kline": klines[-1].as_dict() if klines else None,
+                "signal": signal.as_dict(),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ))
+    finally:
+        await close_binance_fetcher()
+
+
 async def run_monitor():
     """运行监控引擎"""
     print_banner()
@@ -459,6 +540,7 @@ def main():
     python main.py --add BTC    # 添加监控币种
     python main.py --remove BTC # 移除监控币种
     python main.py --status     # 查看状态
+    python main.py --ar-signal  # 查看 ARUSDT 周线策略信号
     python main.py --check      # 检查配置
         """
     )
@@ -493,6 +575,12 @@ def main():
         '--status',
         action='store_true',
         help='显示系统状态'
+    )
+
+    parser.add_argument(
+        '--ar-signal',
+        action='store_true',
+        help='拉取 ARUSDT 周线 K 线并输出 AR/AO 策略信号'
     )
     
     parser.add_argument(
@@ -538,6 +626,9 @@ def main():
     
     elif args.status:
         asyncio.run(show_status())
+
+    elif args.ar_signal:
+        asyncio.run(show_ar_signal())
     
     elif args.check:
         print_banner()

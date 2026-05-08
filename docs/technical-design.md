@@ -84,6 +84,13 @@
 - 重试和超时控制。
 - 归一化为 `MarketSnapshot`。
 
+`binance.py` 负责：
+
+- 通过 Binance `/api/v3/klines` 抓取历史 K 线。
+- 支持分页循环拉取。
+- 支持多个 `base_urls` 轮询，预留 Nginx/多 VM 代理池。
+- 归一化为 `BinanceKline`。
+
 `onchain.py` 负责：
 
 - 接收单条或批量 payload。
@@ -91,7 +98,22 @@
 - 兼容 QuickNode 风格包装结构。
 - 归一化为 `OnchainEvent`。
 
-### 3.5 AI 层
+### 3.5 策略层
+
+- `crypto_monitor/quant_engine.py`
+- `crypto_monitor/ar_strategy.py`
+
+`quant_engine.py` 负责通用币种的轻量 RSI、Bollinger、MACD 和成交额异动信号。
+
+`ar_strategy.py` 负责 AR/AO 专用五维策略：
+
+- 周线 MA7/MA25 趋势判断。
+- MACD 动能判断。
+- 关键阻力位突破判断。
+- RSI 与 Bollinger 回调区域判断。
+- 为叙事过滤、期现套利和做市层预留结构化输出。
+
+### 3.6 AI 层
 
 - `crypto_monitor/ai_service.py`
 
@@ -104,7 +126,7 @@
 - 对非 JSON 输出进行兜底。
 - 对模型未配置或请求失败进行降级。
 
-### 3.6 通知层
+### 3.7 通知层
 
 - `crypto_monitor/notifier.py`
 
@@ -117,7 +139,7 @@
 - 日报推送。
 - 总量和目标级限流。
 
-### 3.7 存储层
+### 3.8 存储层
 
 - `crypto_monitor/storage.py`
 
@@ -129,7 +151,7 @@
 - 查询告警历史和链上事件。
 - 清理过期数据。
 
-### 3.8 报告层
+### 3.9 报告层
 
 - `crypto_monitor/reporting.py`
 
@@ -152,6 +174,8 @@ CLI / HTTP API
 MonitorEngine
       |
       +--> MarketDataFetcher ----> MarketSnapshot
+      |
+      +--> BinanceKlineFetcher --> BinanceKline ----> ARStrategyEngine
       |
       +--> OnchainAdapter -------> OnchainEvent
       |
@@ -261,14 +285,22 @@ MonitorEngine
   - 支持 query：`hours=24`
   - 支持 query：`send=true`
 
+- `GET /strategies/ar`
+  - 拉取 Binance ARUSDT 历史 K 线并返回 AR/AO 五层策略信号。
+  - 支持 query：`symbol=ARUSDT`、`interval=1w`、`startTime=...`、`endTime=...`、`max_pages=...`
+
 ## 7. 配置结构
 
 主要配置段：
 
 - `monitor`
 - `market`
+- `binance`
 - `ai`
 - `notification`
+- `dex`
+- `quant`
+- `ar_strategy`
 - `storage`
 - `logging`
 - `health_check`
@@ -278,6 +310,14 @@ MonitorEngine
 
 新增重点配置：
 
+- `binance.base_urls`
+- `binance.page_limit`
+- `ar_strategy.symbol`
+- `ar_strategy.weekly_interval`
+- `ar_strategy.ma_fast`
+- `ar_strategy.ma_slow`
+- `ar_strategy.key_resistance`
+- `ar_strategy.funding_rate_threshold`
 - `onchain.enabled`
 - `onchain.tracked_addresses`
 - `onchain.whale_transfer_threshold_usd`

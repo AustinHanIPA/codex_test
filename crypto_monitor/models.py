@@ -70,6 +70,83 @@ class QuantSignal:
 
 
 @dataclass
+class BinanceKline:
+    """Binance Kline 原始蜡烛图数据。"""
+
+    open_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    close_time: int
+    quote_volume: float = 0.0
+    trades: int = 0
+    taker_buy_base_volume: float = 0.0
+    taker_buy_quote_volume: float = 0.0
+    raw: List[Any] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "open_time": self.open_time,
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+            "close_time": self.close_time,
+            "quote_volume": self.quote_volume,
+            "trades": self.trades,
+            "taker_buy_base_volume": self.taker_buy_base_volume,
+            "taker_buy_quote_volume": self.taker_buy_quote_volume,
+        }
+
+
+@dataclass
+class ARStrategySignal:
+    """AR/AO 五维自适应策略输出。"""
+
+    symbol: str
+    timeframe: str
+    signal: str = "NEUTRAL"
+    trend: str = "unknown"
+    score: float = 0.0
+    close: Optional[float] = None
+    ma_fast: Optional[float] = None
+    ma_slow: Optional[float] = None
+    macd: Optional[float] = None
+    macd_signal: Optional[float] = None
+    rsi: Optional[float] = None
+    bollinger_width: Optional[float] = None
+    key_resistance: Optional[float] = None
+    step_in_slices: int = 0
+    reasons: List[str] = field(default_factory=list)
+    layers: Dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "signal": self.signal,
+            "trend": self.trend,
+            "score": round(self.score, 2),
+            "close": round(self.close, 8) if self.close is not None else None,
+            "ma_fast": round(self.ma_fast, 8) if self.ma_fast is not None else None,
+            "ma_slow": round(self.ma_slow, 8) if self.ma_slow is not None else None,
+            "macd": round(self.macd, 8) if self.macd is not None else None,
+            "macd_signal": round(self.macd_signal, 8) if self.macd_signal is not None else None,
+            "rsi": round(self.rsi, 2) if self.rsi is not None else None,
+            "bollinger_width": (
+                round(self.bollinger_width, 6) if self.bollinger_width is not None else None
+            ),
+            "key_resistance": self.key_resistance,
+            "step_in_slices": self.step_in_slices,
+            "reasons": self.reasons,
+            "layers": self.layers,
+        }
+
+
+@dataclass
 class OnchainEvent:
     """链上事件。"""
 

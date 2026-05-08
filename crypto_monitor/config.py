@@ -56,6 +56,16 @@ class MarketConfig:
 
 
 @dataclass
+class BinanceConfig:
+    """Binance REST 数据源配置，支持 Nginx/多 VM 代理池。"""
+    base_urls: List[str] = field(default_factory=lambda: ["https://api.binance.com"])
+    timeout: int = 10
+    max_retries: int = 3
+    retry_delay: int = 1
+    page_limit: int = 1000
+
+
+@dataclass
 class DexConfig:
     """DEX 聚合数据源配置。"""
     enabled: bool = True
@@ -73,6 +83,27 @@ class QuantConfig:
     enabled: bool = True
     history_hours: int = 72
     min_score_to_alert: float = 70.0
+
+
+@dataclass
+class ARStrategyConfig:
+    """AR/AO 五维自适应策略配置。"""
+    enabled: bool = True
+    symbol: str = "ARUSDT"
+    weekly_interval: str = "1w"
+    hourly_interval: str = "1h"
+    ma_fast: int = 7
+    ma_slow: int = 25
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    bollinger_period: int = 20
+    bollinger_stddev: float = 2.0
+    rsi_period: int = 14
+    key_resistance: float = 2.645
+    funding_rate_threshold: float = 0.0003
+    step_in_slices: int = 3
+    history_start_time_ms: Optional[int] = None
 
 
 @dataclass
@@ -209,8 +240,10 @@ class Config:
     """主配置类"""
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     market: MarketConfig = field(default_factory=MarketConfig)
+    binance: BinanceConfig = field(default_factory=BinanceConfig)
     dex: DexConfig = field(default_factory=DexConfig)
     quant: QuantConfig = field(default_factory=QuantConfig)
+    ar_strategy: ARStrategyConfig = field(default_factory=ARStrategyConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     notification: NotificationConfig = field(default_factory=NotificationConfig)
     affiliate: AffiliateConfig = field(default_factory=AffiliateConfig)
@@ -356,11 +389,17 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
     if 'market' in config_data:
         config.market = _dict_to_dataclass(config_data['market'], MarketConfig)
 
+    if 'binance' in config_data:
+        config.binance = _dict_to_dataclass(config_data['binance'], BinanceConfig)
+
     if 'dex' in config_data:
         config.dex = _dict_to_dataclass(config_data['dex'], DexConfig)
 
     if 'quant' in config_data:
         config.quant = _dict_to_dataclass(config_data['quant'], QuantConfig)
+
+    if 'ar_strategy' in config_data:
+        config.ar_strategy = _dict_to_dataclass(config_data['ar_strategy'], ARStrategyConfig)
     
     if 'ai' in config_data:
         config.ai = _dict_to_dataclass(config_data['ai'], AIConfig)
@@ -442,9 +481,15 @@ def load_config(config_path: Optional[str] = None, env_path: Optional[str] = Non
             config.notification.telegram.base_url = f"http://{gcp_ip}/tg"
         if not config.dex.base_url:
             config.dex.base_url = f"http://{gcp_ip}/dexscreener"
+        if not [item for item in config.binance.base_urls if item]:
+            config.binance.base_urls = [f"http://{gcp_ip}/binance"]
 
     if not config.dex.base_url:
         config.dex.base_url = "https://api.dexscreener.com"
+
+    config.binance.base_urls = [item.rstrip("/") for item in config.binance.base_urls if item]
+    if not config.binance.base_urls:
+        config.binance.base_urls = ["https://api.binance.com"]
 
     return config
 

@@ -69,11 +69,17 @@ class QuantEngine:
                 reasons.append("MACD below signal line")
 
         if signal.volume_spike is not None and signal.volume_spike >= 3:
-            direction = 1 if score >= 0 else -1
+            direction = self._volume_direction(signal, score)
             score += 20 * direction
             reasons.append(f"volume spike {signal.volume_spike:.2f}x")
 
         return max(-100.0, min(100.0, score)), reasons
+
+    @staticmethod
+    def _volume_direction(signal: QuantSignal, score: float) -> int:
+        if signal.macd is not None and signal.macd_signal is not None:
+            return 1 if signal.macd >= signal.macd_signal else -1
+        return 1 if score >= 0 else -1
 
     @staticmethod
     def _classify(score: float) -> str:

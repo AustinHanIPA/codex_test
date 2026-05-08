@@ -15,6 +15,8 @@
 - `crypto_monitor/main.py`
 - `crypto_monitor/monitor.py`
 - `crypto_monitor/market.py`
+- `crypto_monitor/binance.py`
+- `crypto_monitor/ar_strategy.py`
 - `crypto_monitor/onchain.py`
 - `crypto_monitor/rules.py`
 - `crypto_monitor/ai_service.py`
@@ -35,6 +37,7 @@
 当前项目已经从“价格轮询机器人”演进为“轻量多源监控服务”：
 
 - 价格数据仍以 REST 轮询为主。
+- AR/AO 专用策略已接入 Binance K 线数据和五层策略信号。
 - 链上事件通过 webhook/push 入口接入。
 - 告警判断从硬编码阈值演进为 `RuleEngine`。
 - AI 输出从短文本升级为结构化 `AIInsight`。
@@ -81,7 +84,20 @@
 - 输出规则原因 `rule_reasons` 和规则标签 `rule_tags`。
 - 输出命中的规则 ID `matched_rules`。
 
-### 3.4 链上事件接入
+### 3.4 AR/AO 策略监控
+
+系统应支持：
+
+- 通过 Binance `/api/v3/klines` 分页抓取历史 K 线。
+- 支持 Binance 官方地址和 Nginx 代理池地址。
+- 默认分析 `ARUSDT` 周线。
+- 计算 MA7、MA25、MACD、RSI、Bollinger Band 宽度。
+- 识别 MA 趋势、MACD 动能、关键阻力位突破和趋势内超卖回调。
+- 输出 `BUY_STEP_IN`、`WATCH_BUY`、`NEUTRAL`、`RISK_OFF` 或 `INSUFFICIENT_DATA`。
+- 通过 `GET /strategies/ar` 查询策略信号。
+- 通过 `python crypto_monitor/main.py --ar-signal` 本地输出策略信号。
+
+### 3.5 链上事件接入
 
 系统应支持：
 
@@ -95,7 +111,7 @@
 - 支持基于 `event_id` 的重复事件跳过。
 - 保存链上事件及规则判断结果。
 
-### 3.5 AI 洞察
+### 3.6 AI 洞察
 
 系统应支持：
 
@@ -111,7 +127,7 @@
   - `suggested_action`
   - `confidence`
 
-### 3.6 通知能力
+### 3.7 通知能力
 
 系统应支持：
 
@@ -123,7 +139,7 @@
 - 通知投递结果记录。
 - 总量限流和同目标冷却。
 
-### 3.7 存储能力
+### 3.8 存储能力
 
 系统应保存：
 
@@ -135,7 +151,7 @@
 - 报告记录 `reports`
 - 通知投递记录 `notification_deliveries`
 
-### 3.8 报告能力
+### 3.9 报告能力
 
 系统应支持：
 
@@ -165,6 +181,7 @@
 - `POST /control/resume`
 - `POST /webhooks/onchain`
 - `POST /reports/daily`
+- `GET /strategies/ar`
 
 ## 4. 用户故事
 
@@ -174,6 +191,7 @@
 2. 作为交易者，我希望链上巨鲸转账也能触发告警。
 3. 作为交易者，我希望告警里包含风险提示和建议动作。
 4. 作为交易者，我希望系统避免同一币种在短时间内重复刷屏。
+5. 作为 AR 交易者，我希望系统基于 AO 叙事、周线趋势和回调指标给出分批建仓信号。
 
 ### 4.2 社群运营者
 
@@ -214,13 +232,14 @@
 
 ## 6. 当前未完成需求
 
-1. Notion 日报未接入。
-2. DEX Screener / Birdeye 等市场数据源未接入。
-3. WebSocket/Streams 模式未接入。
-4. 规则仍是轻量配置，还没有完整 AND/OR DSL 和规则管理界面。
-5. Web 控制台、用户体系和多租户未实现。
-6. 失败通知还没有重试队列和死信处理。
-7. 历史回放、回测和告警质量评估未实现。
+1. AR 策略尚未接入 AO 网络存储量、GitHub 活跃度和社媒权重。
+2. AR 策略尚未接入资金费率、盘口深度和真实执行层。
+3. Notion 日报未接入。
+4. WebSocket/Streams 模式未接入。
+5. 规则仍是轻量配置，还没有完整 AND/OR DSL 和规则管理界面。
+6. Web 控制台、用户体系和多租户未实现。
+7. 失败通知还没有重试队列和死信处理。
+8. 历史回放、回测和告警质量评估未实现。
 
 ## 7. 优先级建议
 
