@@ -588,6 +588,19 @@ def main():
         action='store_true',
         help='检查配置'
     )
+
+    parser.add_argument(
+        '--pipeline',
+        action='store_true',
+        help='使用推荐管线模式运行（Pipeline v3.0）'
+    )
+
+    parser.add_argument(
+        '--pipeline-query',
+        type=str,
+        metavar='QUERY',
+        help='管线查询关键词（配合 --pipeline 使用）'
+    )
     
     parser.add_argument(
         '--config',
@@ -633,7 +646,16 @@ def main():
     elif args.check:
         print_banner()
         check_config()
-    
+
+    elif args.pipeline:
+        from pipeline_main import run_pipeline_once
+        asyncio.run(run_pipeline_once(
+            query=args.pipeline_query or "",
+            enable_telegram=True,
+            enable_storage=True,
+            enable_report=True,
+        ))
+
     else:
         # 默认：启动监控
         asyncio.run(run_monitor())
